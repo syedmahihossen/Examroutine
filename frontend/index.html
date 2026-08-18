@@ -2,72 +2,26 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#082c5c">
 <title>Student Exam Routine Generator</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div class="container">
-<header class="hero">
-  <div>
-    <div class="eyebrow">STUDENT EXAM ROUTINE</div>
-    <h1>Build Your Exam Routine</h1>
-    <p>Upload the official routine. Add the seat-plan PDF if you want room and seat allocation for your individual section.</p>
-  </div>
-  <div class="hero-mark">PDF<br>→<br>DATA</div>
-</header>
-
-<section class="card">
-  <div class="upload-grid">
-    <label class="upload">
-      <input id="routine" type="file" accept=".pdf">
-      <span class="number">01</span>
-      <strong>Exam Routine PDF</strong>
-      <small id="routineName">Required</small>
-    </label>
-    <label class="upload">
-      <input id="seatPlan" type="file" accept=".pdf">
-      <span class="number">02</span>
-      <strong>Seat Plan PDF</strong>
-      <small id="seatName">Optional — adds rooms & seats</small>
-    </label>
-  </div>
-
-  <div class="form-row">
-    <div class="field">
-      <label>Your section</label>
-      <input id="section" placeholder="Example: 65_L" value="65_L">
-      <small>Use the exact section shown in the seat-plan PDF.</small>
-    </div>
-    <button id="analyze" class="primary">Analyze Documents</button>
-  </div>
-  <div id="status" class="status hidden"></div>
-</section>
-
-<section id="result" class="card hidden">
-  <div class="result-head">
-    <div><div class="eyebrow dark">VERIFICATION</div><h2 id="resultTitle">Your exams</h2></div>
-    <span id="match" class="pill"></span>
-  </div>
-  <div id="warnings"></div>
-  <div id="exams"></div>
-  <div class="actions">
-    <button id="generate" class="primary">Generate My Routine</button>
-  </div>
-</section>
-
-<section id="preview" class="card hidden">
-  <div class="result-head">
-    <div><div class="eyebrow dark">FINAL ROUTINE</div><h2>Ready to use</h2></div>
-    <div class="actions top">
-      <button id="png" class="secondary">PNG</button>
-      <button id="print" class="secondary">Print / PDF</button>
-    </div>
-  </div>
-  <div id="routineOutput"></div>
-</section>
+<main class="container">
+<header class="hero"><div class="hero-copy"><div class="eyebrow">STUDENT EXAM ROUTINE</div><h1>Build Your Exam Routine</h1><p>Upload the official routine and optionally add the seat-plan PDF for room and seat allocation.</p></div><div class="hero-mark" aria-hidden="true">PDF<br><span>→</span><br>DATA</div></header>
+<section class="card upload-card">
+<div class="upload-grid">
+<label class="upload"><input id="routine" type="file" accept="application/pdf,.pdf"><span class="number">01</span><strong>Exam Routine PDF</strong><small id="routineName">Required</small><span class="choose">Choose PDF</span></label>
+<label class="upload"><input id="seatPlan" type="file" accept="application/pdf,.pdf"><span class="number">02</span><strong>Seat Plan PDF</strong><small id="seatName">Optional — adds rooms & seats</small><span class="choose">Choose PDF</span></label>
 </div>
-
+<div class="form-row"><div class="field"><label for="section">Your section</label><input id="section" autocomplete="off" placeholder="Example: 65_L" value="65_L"><small>Use the exact section shown in the seat-plan PDF.</small></div><button id="analyze" class="primary">Analyze Documents</button></div>
+<div id="status" class="status hidden" role="status" aria-live="polite"></div>
+</section>
+<section id="result" class="card hidden"><div class="result-head"><div><div class="eyebrow dark">VERIFICATION</div><h2 id="resultTitle">Your exams</h2></div><span id="match" class="pill"></span></div><div id="warnings"></div><div id="exams"></div><div class="actions"><button id="generate" class="primary">Generate My Routine</button></div></section>
+<section id="preview" class="card hidden"><div class="result-head preview-toolbar"><div><div class="eyebrow dark">FINAL ROUTINE</div><h2>Ready to use</h2></div><div class="actions top"><button id="png" class="secondary">↓ Download PNG</button><button id="pdf" class="secondary">↓ Download PDF</button></div></div><div id="routineOutput"></div><div class="mobile-downloads"><button id="pngMobile" class="secondary">↓ Download PNG</button><button id="pdfMobile" class="secondary">↓ Download PDF</button></div></section>
+</main>
+<div id="exportStage" aria-hidden="true"></div>
 <script src="app.js"></script>
 </body>
 </html>
