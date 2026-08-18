@@ -1,218 +1,417 @@
-const API = "https://examroutine.onrender.com";
+const queryApi = new URLSearchParams(location.search).get("api");
+const isLocal = location.protocol === "file:" || location.hostname === "127.0.0.1" || location.hostname === "localhost";
+const API = window.EXAM_API || queryApi || (isLocal
+  ? "http://127.0.0.1:8000"
+  : "https://examroutine.onrender.com");
+
 const $ = id => document.getElementById(id);
 let data = null;
 let busy = false;
 
-$("routine").addEventListener("change", e => {
-  const file = e.target.files[0];
-  $("routineName").textContent = file ? file.name : "Required";
-});
-$("seatPlan").addEventListener("change", e => {
-  const file = e.target.files[0];
-  $("seatName").textContent = file ? file.name : "Optional — adds rooms & seats";
-});
-$("analyze").onclick = analyze;
-$("generate").onclick = generateRoutine;
-$("png").onclick = downloadPNG;
-$("pdf").onclick = downloadPDF;
-$("pngMobile").onclick = downloadPNG;
-$("pdfMobile").onclick = downloadPDF;
+$("autoAnalyze").addEventListener("click", autoAnalyze);
+$("png").addEventListener("click", downloadPNG);
+$("pdf").addEventListener("click", downloadPDF);
+$("pngMobile").addEventListener("click", downloadPNG);
+$("pdfMobile").addEventListener("click", downloadPDF);
 
-function status(message, error=false, loading=false) {
+async function checkBackend() {
+  try {
+    const r = await fetch(`${API}/api/health`, { cache: "no-store" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    console.log("ExamRoutine backend:", await r.json());
+  } catch (e) {
+    console.warn("Backend unavailable:", e.message);
+  }
+}
+checkBackend();
+
+function status(message, error = false, loading = false) {
   const el = $("status");
   el.textContent = message;
-  el.classList.remove("hidden","error","loading");
-  if(error) el.classList.add("error");
-  if(loading) el.classList.add("loading");
+  el.classList.remove("hidden", "error", "loading");
+  if (error) el.classList.add("error");
+  if (loading) el.classList.add("loading");
 }
 
-async function analyze() {
+function setBusy(value) {
+  busy = value;
+  const button = $("autoAnalyze");
+  button.disabled = value;
+  button.classList.toggle("loading-button", value);
+}
+
+async function autoAnalyze() {
   if (busy) return;
-  const routine = $("routine").files[0];
-  const seatPlan = $("seatPlan").files[0];
-  const section = $("section").value.trim();
-  if(!routine) return status("Please upload the exam routine PDF.", true);
-  if(!routine.name.toLowerCase().endsWith(".pdf")) return status("The exam routine must be a PDF file.", true);
-  if(seatPlan && !seatPlan.name.toLowerCase().endsWith(".pdf")) return status("The seat plan must be a PDF file.", true);
-  if(!section) return status("Please enter your section, e.g. 65_L.", true);
 
-  const form = new FormData();
-  form.append("routine_pdf", routine);
-  form.append("section", section);
-  if(seatPlan) form.append("seat_plan_pdf", seatPlan);
+  const section = $("section").value.trim().toUpperCase().replace(/-/g, "_");
+  const examType = $("examType").value;
+  const semester = $("semester").value;
+  const year = $("academicYear").value.trim();
 
-  busy = true;
-  $("analyze").disabled = true;
-  $("analyze").classList.add("loading-button");
-  status("Processing the PDFs and matching your section…", false, true);
+  if (!/^\d{2,3}_[A-Z0-9]+$/.test(section)) {
+    return status("Enter a valid section such as 65_L or 65_N.", true);
+  }
+  if (!year || !/^20\d{2}$/.test(year)) {
+    return status("Enter a valid academic year, for example 2026.", true);
+  }
+
+  setBusy(true);
+  $("result").classList.add("hidden");
+  $("preview").classList.add("hidden");
+  $("sourceInfo").classList.add("hidden");
+  status(
+    "Checking the DIU Notice Board, finding the official routine and matching the seat plan… This may take up to a minute on a free backend.",
+    false,
+    true
+  );
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 180000);
+
   try {
-    const response = await fetch(`${API}/api/analyze`, {method:"POST", body:form});
+    const q = new URLSearchParams({
+      section,
+      exam_type: examType,
+      semester,
+      year,
+      include_seat_plan: "true"
+    });
+
+    const response = await fetch(`${API}/api/auto-analyze?${q.toString()}`, {
+      method: "GET",
+      signal: controller.signal,
+      cache: "no-store"
+    });
+
     const body = await response.json().catch(() => ({}));
-    if(!response.ok) {
+    if (!response.ok) {
       let message = body.detail || `Server error (${response.status})`;
-      if(Array.isArray(body.detail)) message = body.detail.map(x => x.msg || "Validation error").join(", ");
+      if (Array.isArray(body.detail)) {
+        message = body.detail.map(x => x.msg || "Validation error").join(", ");
+      }
       throw new Error(message);
     }
+
     data = body;
+    renderSource();
     renderResult();
-    status(`Done. Found ${body.exam_count} exam(s) for ${body.section}.`);
-  } catch(err) {
-    console.error(err);
-    status(`Could not analyze the PDFs. ${err.message}`, true);
+    generateRoutine();
+
+    const seatMessage = body.seat_plan_available
+      ? `${body.matched_seat_count}/${body.exam_count} seat allocations matched.`
+      : "No matching seat plan was available, so the routine is shown without room/seat columns.";
+
+    const scope = body.seat_plan_available ? body.section : `Batch ${body.batch}`;
+    status(`Done. Found ${body.exam_count} examination(s) for ${scope}. ${seatMessage}`);
+  } catch (e) {
+    console.error(e);
+    const message = e.name === "AbortError"
+      ? "The lookup timed out. The DIU Notice Board or free backend may be slow. Please try again."
+      : e.message || "Automatic lookup failed.";
+    status(message, true);
   } finally {
-    busy = false;
-    $("analyze").disabled = false;
-    $("analyze").classList.remove("loading-button");
+    clearTimeout(timer);
+    setBusy(false);
   }
 }
 
+function renderSource() {
+  const source = data?.source;
+  const box = $("sourceInfo");
+  if (!source) {
+    box.classList.add("hidden");
+    return;
+  }
+
+  box.innerHTML = `
+    <div class="source-ok">
+      <span class="source-dot">✓</span>
+      <div>
+        <strong>Collected automatically from DIU Notice Board</strong>
+        <small>${escapeHtml(source.routine_title || "Official examination routine")}</small>
+      </div>
+    </div>
+    <div class="source-links">
+      ${source.routine_url ? `<a href="${escapeAttr(source.routine_url)}" target="_blank" rel="noopener">Open routine ↗</a>` : ""}
+      ${source.seat_plan_url
+        ? `<a href="${escapeAttr(source.seat_plan_url)}" target="_blank" rel="noopener">Open seat plan ↗</a>`
+        : `<span>No matching seat plan was found.</span>`}
+    </div>
+  `;
+  box.classList.remove("hidden");
+}
+
 function renderResult() {
+  const exams = data?.exams || [];
   $("result").classList.remove("hidden");
-  $("preview").classList.add("hidden");
-  $("resultTitle").textContent = `${data.section} — ${data.exam_count} examination(s)`;
-  $("match").textContent = data.seat_plan_uploaded ? `${data.matched_seat_count}/${data.exam_count} seat matches` : "Routine only";
-  $("warnings").innerHTML = (data.warnings || []).map(w => `<div class="warning">${escapeHtml(w)}</div>`).join("");
-  $("exams").innerHTML = (data.exams || []).map((x,i) => `
-    <article class="exam">
-      <div class="exam-date-block"><div class="date">${formatDate(x.date)}</div><div class="code">${escapeHtml(x.day)} · Slot ${escapeHtml(x.slot)}</div></div>
-      <div class="exam-course"><label>Course code</label><input data-i="${i}" data-key="course_code" value="${escapeAttr(x.course_code)}"><label>Course name</label><input data-i="${i}" data-key="course_name" value="${escapeAttr(x.course_name)}"></div>
-      <div class="exam-time"><label>Exam time</label><input data-i="${i}" data-key="time" value="${escapeAttr(x.time)}"></div>
-      <div class="rooms"><label>Rooms & seats</label>${x.rooms?.length ? x.rooms.map(r => `<div class="roomline"><span>Room ${escapeHtml(r.room)}</span><strong>${Number(r.seats)||0} seats</strong></div>`).join("") : `<span class="muted">${data.seat_plan_uploaded ? "No matched seat allocation" : "Seat plan not uploaded"}</span>`}</div>
-    </article>`).join("");
-  document.querySelectorAll("#exams input").forEach(input => input.addEventListener("input", () => {
-    const i = Number(input.dataset.i); data.exams[i][input.dataset.key] = input.value;
-  }));
+  $("resultTitle").textContent = data.seat_plan_available
+    ? `${data.section} — ${data.exam_count} examination(s)`
+    : `Batch ${data.batch} — ${data.exam_count} examination(s)`;
+
+  if (data.seat_plan_available) {
+    $("match").textContent = `${data.matched_seat_count}/${data.exam_count} seat matches`;
+  } else {
+    $("match").textContent = "Routine only";
+  }
+
+  $("warnings").innerHTML = (data.warnings || [])
+    .map(w => `<div class="warning">${escapeHtml(w)}</div>`)
+    .join("");
+
+  $("exams").innerHTML = exams.map(x => {
+    const rooms = x.rooms?.length
+      ? x.rooms.map(r => `
+          <div class="roomline">
+            <span>Room ${escapeHtml(r.room)}</span>
+            <strong>${Number(r.seats) || 0} seats</strong>
+          </div>`).join("")
+      : `<span class="muted">${data.seat_plan_available ? "No matched seat allocation" : "Seat plan not available"}</span>`;
+
+    return `
+      <article class="exam">
+        <div class="exam-date-block">
+          <div class="date">${formatDate(x.date)}</div>
+          <div class="code">${escapeHtml(x.day)} · Slot ${escapeHtml(x.slot || "—")}</div>
+        </div>
+        <div class="exam-course">
+          <label>Course</label>
+          <strong>${escapeHtml(x.course_code)}</strong>
+          <span>${escapeHtml(x.course_name)}</span>
+        </div>
+        <div class="exam-time">
+          <label>Exam time</label>
+          <strong>${escapeHtml(x.time || "—")}</strong>
+        </div>
+        ${data.seat_plan_available ? `<div class="rooms"><label>Rooms & seats</label>${rooms}</div>` : ""}
+      </article>
+    `;
+  }).join("");
 }
 
 function generateRoutine() {
-  if(!data?.exams?.length) return status("Analyze the documents first.", true);
-  const exams = [...data.exams].sort((a,b) => String(a.date).localeCompare(String(b.date)));
+  if (!data?.exams?.length) return;
+
+  const exams = [...data.exams].sort((a, b) => {
+    const date = String(a.date).localeCompare(String(b.date));
+    return date || String(a.slot).localeCompare(String(b.slot));
+  });
   data.exams = exams;
-  const session = [data.semester,data.year].filter(Boolean).join(" ") || "EXAMINATION";
-  const hasSeats = Boolean(data.seat_plan_uploaded);
-  const totalStudents = getTotalStudents(exams);
-  const section = escapeHtml(data.section);
-  $("routineOutput").innerHTML = buildResponsiveRoutine(exams,session,hasSeats,totalStudents,section);
-  $("exportStage").innerHTML = buildExportRoutine(exams,session,hasSeats,totalStudents,section);
+
+  const session = [data.semester, data.year].filter(Boolean).join(" ") || "EXAMINATION";
+  const hasSeats = Boolean(data.seat_plan_available && data.matched_seat_count > 0);
+  const batch = getBatch(data.section, exams);
+  const identity = hasSeats ? escapeHtml(data.section) : `BATCH ${escapeHtml(batch)}`;
+  const examType = String(data.exam_type || "final").toUpperCase();
+  const title = `${examType} EXAMINATION ROUTINE`;
+
+  $("routineOutput").innerHTML = buildRoutine(exams, session, hasSeats, identity, title, batch);
+  $("exportStage").innerHTML = buildExport(exams, session, hasSeats, identity, title, batch);
   $("preview").classList.remove("hidden");
-  $("preview").scrollIntoView({behavior:"smooth",block:"start"});
 }
 
-function buildResponsiveRoutine(exams,session,hasSeats,totalStudents,section) {
-  const batch = getBatch(section, exams);
-  return `<div class="routine-screen">
-    <div class="routine-head">
-      <div class="export-title"><span>${section}</span> FINAL EXAMINATION ROUTINE</div>
-      <div class="session-line">${escapeHtml(String(session).replace("-","–"))}</div>
+function calendarIcon() {
+  return `<svg class="calendar-svg" viewBox="0 0 48 48" aria-hidden="true">
+    <rect x="8" y="10" width="32" height="30" rx="4" fill="none" stroke="currentColor" stroke-width="4"/>
+    <path d="M8 18h32M15 6v9M33 6v9" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
+    <path d="M15 25h3M22.5 25h3M30 25h3M15 32h3M22.5 32h3M30 32h3" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+  </svg>`;
+}
+
+function buildRoutine(exams, session, hasSeats, identity, title, batch) {
+  const seatHeaders = hasSeats
+    ? `<th>ROOM</th><th>SEATS / ROOM</th><th>TOTAL</th>`
+    : "";
+
+  return `
+    <div class="routine-screen">
+      <div class="routine-head">
+        <div class="export-title"><span>${identity}</span> ${escapeHtml(title)}</div>
+        <div class="session-line"><i></i><strong>${escapeHtml(session.replace("-", "–"))}</strong><i></i></div>
+      </div>
+
+      <div class="meta routine-meta">
+        ${hasSeats
+          ? `<div><span>SECTION</span><strong>${identity}</strong></div>`
+          : `<div><span>BATCH</span><strong>${escapeHtml(batch)}</strong></div>`}
+        <div><span>EXAMINATIONS</span><strong>${exams.length}</strong></div>
+        ${hasSeats ? `<div><span>BATCH</span><strong>${escapeHtml(batch)}</strong></div>` : ""}
+      </div>
+
+      <div class="routine-table-wrap">
+        <table class="routine-table ${hasSeats ? "with-seats" : "without-seats"}">
+          <thead><tr>
+            <th>DATE</th><th>DAY</th><th>COURSE</th><th>TIME</th>${seatHeaders}
+          </tr></thead>
+          <tbody>${exams.map((x, i) => screenRow(x, i, hasSeats)).join("")}</tbody>
+        </table>
+      </div>
+
+      <div class="note">
+        <b>NOTE:</b> This schedule is based on the official routine published by the Examination Committee, FSIT.
+      </div>
     </div>
-    <div class="meta routine-meta">
-      <div><span>SECTION</span><strong>${section}</strong></div>
-      <div><span>EXAMINATIONS</span><strong>${exams.length}</strong></div>
-      <div><span>BATCH</span><strong>${escapeHtml(batch)}</strong></div>
-    </div>
-    <div class="routine-table-wrap">
-      <table class="routine-table ${hasSeats ? "with-seats" : "without-seats"}">
+  `;
+}
+
+function buildExport(exams, session, hasSeats, identity, title, batch) {
+  const height = Math.max(980, 430 + exams.length * 145);
+  const seatHeaders = hasSeats
+    ? `<th>ROOM</th><th>SEATS / ROOM</th><th>TOTAL</th>`
+    : "";
+
+  return `
+    <div class="export-routine ${hasSeats ? "export-with-seats" : "export-without-seats"}" style="height:${height}px">
+      <div class="export-top">
+        <div class="export-title"><span>${identity}</span> ${escapeHtml(title)}</div>
+      </div>
+
+      <div class="export-session"><i></i><strong>${escapeHtml(session.replace("-", "–"))}</strong><i></i></div>
+
+      <div class="export-meta">
+        ${hasSeats
+          ? `<div class="export-meta-item"><div><span>SECTION</span><strong>${identity}</strong></div></div>`
+          : `<div class="export-meta-item"><div><span>BATCH</span><strong>${escapeHtml(batch)}</strong></div></div>`}
+        <div class="export-meta-item"><div><span>EXAMINATIONS</span><strong>${exams.length}</strong></div></div>
+        ${hasSeats ? `<div class="export-meta-item"><div><span>BATCH</span><strong>${escapeHtml(batch)}</strong></div></div>` : ""}
+      </div>
+
+      <table class="export-table ${hasSeats ? "with-seats" : "without-seats"}">
         <thead><tr>
-          <th>DATE</th><th>DAY</th><th>COURSE</th><th>TIME</th>
-          ${hasSeats ? "<th>ROOM</th><th>SEATS / ROOM</th>" : ""}
-          <th>TOTAL</th>
+          <th>DATE</th><th>DAY</th><th>COURSE</th><th>TIME</th>${seatHeaders}
         </tr></thead>
-        <tbody>${exams.map((x,i)=>routineRow(x,i,hasSeats)).join("")}</tbody>
+        <tbody>${exams.map((x, i) => exportRow(x, i, hasSeats)).join("")}</tbody>
       </table>
+
+      <div class="export-note">
+        <span>NOTE:</span> This schedule is based on the official routine published by the Examination Committee, FSIT.
+      </div>
     </div>
-    <div class="note"><b>NOTE:</b> This schedule is based on the official routine published by the Examination Committee, FSIT.</div>
-  </div>`;
+  `;
 }
 
-function buildExportRoutine(exams,session,hasSeats,totalStudents,section) {
-  const batch = getBatch(section, exams);
-  const height = Math.max(1067, 450 + exams.length*145);
-  return `<div class="export-routine ${hasSeats ? "export-with-seats" : "export-without-seats"}" style="height:${height}px">
-    <div class="export-top"><div class="export-title"><span>${section}</span> FINAL EXAMINATION ROUTINE</div></div>
-    <div class="export-session"><i></i><strong>${escapeHtml(String(session).replace("-","–"))}</strong><i></i></div>
-    <div class="export-meta routine-meta-export">
-      <div class="export-meta-item"><div><span>SECTION</span><strong>${section}</strong></div></div>
-      <div class="export-meta-item"><div><span>EXAMINATIONS</span><strong>${exams.length}</strong></div></div>
-      <div class="export-meta-item"><div><span>BATCH</span><strong>${escapeHtml(batch)}</strong></div></div>
-    </div>
-    <table class="export-table ${hasSeats ? "with-seats" : "without-seats"}">
-      <thead><tr>
-        <th>DATE</th><th>DAY</th><th>COURSE</th><th>TIME</th>
-        ${hasSeats ? "<th>ROOM</th><th>SEATS / ROOM</th>" : ""}
-        <th>TOTAL</th>
-      </tr></thead>
-      <tbody>${exams.map((x,i)=>exportRow(x,i,hasSeats)).join("")}</tbody>
-    </table>
-    <div class="export-note"><span>NOTE:</span> This schedule is based on the official routine published by the Examination Committee, FSIT.</div>
-  </div>`;
-}
-
-function routineRow(x,i,hasSeats) {
+function screenRow(x, i, hasSeats) {
+  const seats = x.rooms?.length ? x.rooms.map(r => `<div>${escapeHtml(r.room)}</div>`).join("") : "—";
+  const seatCounts = x.rooms?.length ? x.rooms.map(r => `<div>${Number(r.seats) || 0}</div>`).join("") : "—";
   const total = getExamTotal(x);
-  return `<tr class="screen-row-${i%4}">
-    <td class="date-cell"><span class="date-icon"><span class="calendar-glyph"></span></span><strong>${formatDate(x.date)}</strong></td>
-    <td class="center">${escapeHtml(x.day)}</td>
-    <td class="course-cell"><b>${escapeHtml(x.course_code)}</b><span class="course-name"> — ${escapeHtml(x.course_name)}</span></td>
-    <td class="center time-cell">${escapeHtml(x.time||"—")}</td>
-    ${hasSeats ? `<td class="rooms-cell">${x.rooms?.length?x.rooms.map(r=>`<div>${escapeHtml(r.room)}</div>`).join(""):"—"}</td>
-      <td class="center seats-cell">${x.rooms?.length?x.rooms.map(r=>`<div>${Number(r.seats)||0}</div>`).join(""):"—"}</td>` : ""}
-    <td class="center total-cell"><strong>${total}</strong></td>
-  </tr>`;
+
+  return `
+    <tr class="screen-row-${i % 4}">
+      <td class="date-cell"><span class="date-icon">${calendarIcon()}</span><strong>${formatDate(x.date)}</strong></td>
+      <td class="center">${escapeHtml(x.day)}</td>
+      <td class="course-cell"><b>${escapeHtml(x.course_code)}</b><span class="course-name"> — ${escapeHtml(x.course_name)}</span></td>
+      <td class="center time-cell">${escapeHtml(x.time || "—")}</td>
+      ${hasSeats ? `<td class="rooms-cell">${seats}</td><td class="center seats-cell">${seatCounts}</td><td class="center total-cell"><strong>${total}</strong></td>` : ""}
+    </tr>
+  `;
 }
 
-function exportRow(x,i,hasSeats) {
+function exportRow(x, i, hasSeats) {
+  const rooms = x.rooms?.length ? x.rooms.map(r => `<div>${escapeHtml(r.room)}</div>`).join("") : "—";
+  const counts = x.rooms?.length ? x.rooms.map(r => `<div>${Number(r.seats) || 0}</div>`).join("") : "—";
   const total = getExamTotal(x);
-  return `<tr class="export-row-${i%4}">
-    <td class="export-date"><div class="export-date-flex"><span class="export-calendar"><span class="calendar-glyph"></span></span><strong>${formatDate(x.date)}</strong></div></td>
-    <td class="export-center">${escapeHtml(x.day)}</td>
-    <td class="export-course"><b>${escapeHtml(x.course_code)}</b><span> — ${escapeHtml(x.course_name)}</span></td>
-    <td class="export-center export-time">${escapeHtml(x.time||"—")}</td>
-    ${hasSeats ? `<td class="export-rooms">${x.rooms?.length?x.rooms.map(r=>`<div>${escapeHtml(r.room)}</div>`).join(""):"—"}</td>
-      <td class="export-seats">${x.rooms?.length?x.rooms.map(r=>`<div>${Number(r.seats)||0}</div>`).join(""):"—"}</td>` : ""}
-    <td class="export-total">${total}</td>
-  </tr>`;
+
+  return `
+    <tr class="export-row-${i % 4}">
+      <td class="export-date"><div class="export-date-flex"><span class="export-calendar">${calendarIcon()}</span><strong>${formatDate(x.date)}</strong></div></td>
+      <td class="export-center">${escapeHtml(x.day)}</td>
+      <td class="export-course"><b>${escapeHtml(x.course_code)}</b><span> — ${escapeHtml(x.course_name)}</span></td>
+      <td class="export-center export-time">${escapeHtml(x.time || "—")}</td>
+      ${hasSeats ? `<td class="export-rooms">${rooms}</td><td class="export-seats">${counts}</td><td class="export-total">${total}</td>` : ""}
+    </tr>
+  `;
 }
 
 function getExamTotal(x) {
   const explicit = Number(x.total_students);
   if (Number.isFinite(explicit) && explicit > 0) return explicit;
-  if (x.rooms?.length) return x.rooms.reduce((sum,r)=>sum+(Number(r.seats)||0),0);
+  if (x.rooms?.length) return x.rooms.reduce((sum, r) => sum + (Number(r.seats) || 0), 0);
   return "—";
 }
 
 function getBatch(section, exams) {
-  const match = String(section || "").match(/^(\d+)/);
-  if (match) return match[1];
+  const m = String(section || "").match(/^(\d+)/);
+  if (m) return m[1];
   const fromExam = exams.map(x => String(x.batch || "").match(/\d+/)).find(Boolean);
   return fromExam ? fromExam[0] : "—";
 }
-function getTotalStudents(exams) {
-  const values = exams.map(getExamTotal).map(Number).filter(Number.isFinite);
-  return values.length ? Math.max(...values) : "—";
-}
-async function ensureScript(src,test) {
-  if(test()) return;
-  await new Promise((resolve,reject)=>{const script=document.createElement("script");script.src=src;script.onload=resolve;script.onerror=reject;document.head.appendChild(script);});
-}
-async function makeExportCanvas() {
-  if(!data) throw new Error("Generate the routine first.");
-  await ensureScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js",()=>Boolean(window.html2canvas));
-  if(!$('exportStage').firstElementChild) generateRoutine();
-  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+
+async function makeCanvas() {
+  if (!data) throw new Error("Generate the routine first.");
+  if (!window.html2canvas) throw new Error("PNG/PDF library failed to load. Refresh the page.");
+
   const target = $("exportStage").firstElementChild;
-  return html2canvas(target,{width:target.offsetWidth,height:target.offsetHeight,scale:2,useCORS:true,backgroundColor:"#fff",logging:false});
+  if (!target) throw new Error("Routine export is not ready.");
+
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  return window.html2canvas(target, {
+    width: target.offsetWidth,
+    height: target.offsetHeight,
+    scale: 2,
+    useCORS: true,
+    backgroundColor: "#ffffff",
+    logging: false
+  });
 }
+
 async function downloadPNG() {
-  if(!data) return status("Generate your routine first.",true);
-  try { status("Preparing your high-quality PNG…",false,true); const canvas=await makeExportCanvas(); const a=document.createElement("a"); a.download=`${safeFileName(data.section)}_exam_routine.png`; a.href=canvas.toDataURL("image/png",1); a.click(); status("PNG downloaded successfully."); }
-  catch(err){console.error(err);status(`Could not create PNG: ${err.message}`,true);}
+  if (!data) return status("Generate your routine first.", true);
+  try {
+    status("Preparing high-quality PNG…", false, true);
+    const canvas = await makeCanvas();
+    const a = document.createElement("a");
+    const fileScope = data.seat_plan_available ? data.section : `batch_${data.batch}`;
+    a.download = `${safe(fileScope)}_${String(data.exam_type || "exam").toLowerCase()}_routine.png`;
+    a.href = canvas.toDataURL("image/png", 1);
+    a.click();
+    status("PNG downloaded successfully.");
+  } catch (e) {
+    console.error(e);
+    status(`Could not create PNG: ${e.message}`, true);
+  }
 }
+
 async function downloadPDF() {
-  if(!data) return status("Generate your routine first.",true);
-  try { status("Preparing your PDF…",false,true); await ensureScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js",()=>Boolean(window.jspdf?.jsPDF)); const canvas=await makeExportCanvas(); const pdf=new window.jspdf.jsPDF({orientation:"landscape",unit:"mm",format:[297,canvas.height/canvas.width*297],compress:true}); pdf.addImage(canvas.toDataURL("image/png",1),"PNG",0,0,297,canvas.height/canvas.width*297,undefined,"FAST"); pdf.save(`${safeFileName(data.section)}_exam_routine.pdf`); status("PDF downloaded successfully."); }
-  catch(err){console.error(err);status(`Could not create PDF: ${err.message}`,true);}
+  if (!data) return status("Generate your routine first.", true);
+  try {
+    status("Preparing high-quality PDF…", false, true);
+    if (!window.jspdf?.jsPDF) throw new Error("PDF library failed to load. Refresh the page.");
+
+    const canvas = await makeCanvas();
+    const pageWidth = 297;
+    const pageHeight = canvas.height / canvas.width * pageWidth;
+    const pdf = new window.jspdf.jsPDF({
+      orientation: "landscape",
+      unit: "mm",
+      format: [pageWidth, pageHeight],
+      compress: true
+    });
+    pdf.addImage(canvas.toDataURL("image/png", 1), "PNG", 0, 0, pageWidth, pageHeight, undefined, "FAST");
+    const fileScope = data.seat_plan_available ? data.section : `batch_${data.batch}`;
+    pdf.save(`${safe(fileScope)}_${String(data.exam_type || "exam").toLowerCase()}_routine.pdf`);
+    status("PDF downloaded successfully.");
+  } catch (e) {
+    console.error(e);
+    status(`Could not create PDF: ${e.message}`, true);
+  }
 }
-function safeFileName(v){return String(v||"exam").replace(/[^a-z0-9_-]+/gi,"_");}
-function formatDate(value){if(!value)return "—";const d=new Date(`${value}T00:00:00`);if(Number.isNaN(d.getTime()))return escapeHtml(value);return d.toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"});}
-function escapeHtml(value){return String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));}
-function escapeAttr(value){return escapeHtml(value);}
+
+function safe(value) {
+  return String(value || "exam").replace(/[^a-z0-9_-]+/gi, "_");
+}
+
+function formatDate(value) {
+  if (!value) return "—";
+  const d = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return escapeHtml(value);
+  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+  }[c]));
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value);
+}

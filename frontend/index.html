@@ -1,27 +1,15 @@
 <!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#082c5c">
-<title>Student Exam Routine Generator</title>
-<link rel="stylesheet" href="style.css">
-</head>
-<body>
-<main class="container">
-<header class="hero"><div class="hero-copy"><div class="eyebrow">STUDENT EXAM ROUTINE</div><h1>Build Your Exam Routine</h1><p>Upload the official routine and optionally add the seat-plan PDF for room and seat allocation.</p></div><div class="hero-mark" aria-hidden="true">PDF<br><span>→</span><br>DATA</div></header>
-<section class="card upload-card">
-<div class="upload-grid">
-<label class="upload"><input id="routine" type="file" accept="application/pdf,.pdf"><span class="number">01</span><strong>Exam Routine PDF</strong><small id="routineName">Required</small><span class="choose">Choose PDF</span></label>
-<label class="upload"><input id="seatPlan" type="file" accept="application/pdf,.pdf"><span class="number">02</span><strong>Seat Plan PDF</strong><small id="seatName">Optional — adds rooms & seats</small><span class="choose">Choose PDF</span></label>
-</div>
-<div class="form-row"><div class="field"><label for="section">Your section</label><input id="section" autocomplete="off" placeholder="Example: 65_L" value="65_L"><small>Use the exact section shown in the seat-plan PDF.</small></div><button id="analyze" class="primary">Analyze Documents</button></div>
-<div id="status" class="status hidden" role="status" aria-live="polite"></div>
-</section>
-<section id="result" class="card hidden"><div class="result-head"><div><div class="eyebrow dark">VERIFICATION</div><h2 id="resultTitle">Your exams</h2></div><span id="match" class="pill"></span></div><div id="warnings"></div><div id="exams"></div><div class="actions"><button id="generate" class="primary">Generate My Routine</button></div></section>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#082c5c"><title>Student Exam Routine</title><link rel="stylesheet" href="style.css"></head>
+<body><main class="container">
+<header class="hero"><div><div class="eyebrow">STUDENT EXAM ROUTINE</div><h1>Build Your Exam Routine</h1><p>Automatically find the latest CSE Mid or Final examination routine from the DIU Notice Board and match your section with the seat plan.</p></div><div class="hero-mark" aria-hidden="true">PDF<br><span>→</span><br>DATA</div></header>
+<section class="card auto-card"><div class="auto-head"><div><div class="eyebrow dark">AUTOMATIC MODE</div><h2>Get your latest routine</h2><p>Choose your section, semester, year and exam type. The system finds the official notice, downloads the routine and seat plan, and matches your rooms automatically.</p></div><div class="live-badge"><span></span> DIU Notice Board</div></div>
+<div class="auto-form">
+<div class="field"><label for="section">Your section</label><input id="section" autocomplete="off" placeholder="Example: 65_L" value="65_L"><small>Use your exact section.</small></div>
+<div class="field"><label for="semester">Semester</label><select id="semester"><option value="spring">Spring</option><option value="summer" selected>Summer</option><option value="fall">Fall</option></select><small>Academic semester.</small></div>
+<div class="field"><label for="academicYear">Year</label><input id="academicYear" type="number" min="2020" max="2100" value="2026"><small>Academic year.</small></div>
+<div class="field"><label for="examType">Exam type</label><select id="examType"><option value="final" selected>Final</option><option value="mid">Mid</option></select><small>Only Mid and Final.</small></div>
+<button id="autoAnalyze" class="primary auto-button">↻ Get My Latest Routine</button></div>
+<div id="status" class="status hidden" role="status" aria-live="polite"></div><div id="sourceInfo" class="source-info hidden"></div></section>
+<section id="result" class="card hidden"><div class="result-head"><div><div class="eyebrow dark">VERIFICATION</div><h2 id="resultTitle">Your exams</h2></div><span id="match" class="pill"></span></div><div id="warnings"></div><div id="exams"></div></section>
 <section id="preview" class="card hidden"><div class="result-head preview-toolbar"><div><div class="eyebrow dark">FINAL ROUTINE</div><h2>Ready to use</h2></div><div class="actions top"><button id="png" class="secondary">↓ Download PNG</button><button id="pdf" class="secondary">↓ Download PDF</button></div></div><div id="routineOutput"></div><div class="mobile-downloads"><button id="pngMobile" class="secondary">↓ Download PNG</button><button id="pdfMobile" class="secondary">↓ Download PDF</button></div></section>
-</main>
-<div id="exportStage" aria-hidden="true"></div>
-<script src="app.js"></script>
-</body>
-</html>
+</main><div id="exportStage" aria-hidden="true"></div><script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script><script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script><script src="app.js"></script></body></html>

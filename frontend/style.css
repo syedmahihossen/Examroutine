@@ -46,20 +46,11 @@ button,input{font:inherit}button{touch-action:manipulation}
   background:#fff;border:1px solid var(--line);border-radius:22px;margin-top:20px;padding:26px;
   box-shadow:0 10px 32px #12233d0a
 }
-.upload-grid{display:grid;grid-template-columns:1fr 1fr;gap:17px}
-.upload{
-  min-height:190px;border:2px dashed #b8c6d8;border-radius:18px;display:flex;flex-direction:column;
-  align-items:center;justify-content:center;gap:9px;text-align:center;cursor:pointer;transition:.18s;
-  padding:22px;position:relative;overflow:hidden;background:linear-gradient(180deg,#fff,#fbfdff)
-}
-.upload:hover{border-color:var(--blue);background:#f7fbff;transform:translateY(-2px);box-shadow:0 10px 24px #1d5b9610}
-.upload:focus-within{border-color:var(--blue);box-shadow:0 0 0 4px #1d5b9615}
-.upload input{position:absolute;inset:0;opacity:0;cursor:pointer}
 .number{
   width:46px;height:46px;background:var(--navy);color:#fff;border-radius:14px;display:grid;
   place-items:center;font-weight:950;box-shadow:0 7px 16px #082d6230
 }
-.upload strong{font-size:19px}.upload small{color:var(--muted);max-width:95%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
 .choose{
   display:inline-flex;align-items:center;justify-content:center;border:1px solid #cbd7e5;border-radius:999px;
   padding:7px 13px;font-size:12px;font-weight:850;color:var(--navy);background:#fff
@@ -220,13 +211,7 @@ button,input{font:inherit}button{touch-action:manipulation}
 .export-row-0{background:#fbfdff}.export-row-1{background:#f3fbf6}.export-row-2{background:#faf8ff}.export-row-3{background:#fffaf1}
 .export-row-0 td:first-child{border-left:4px solid #1d5b96}.export-row-1 td:first-child{border-left:4px solid #18875f}
 .export-row-2 td:first-child{border-left:4px solid #6251b7}.export-row-3 td:first-child{border-left:4px solid #ee8b12}
-.export-date-flex{display:flex;align-items:center;gap:13px}.export-calendar{
-  flex:none;width:55px;height:55px;border-radius:50%;background:linear-gradient(145deg,#145391,#082d62);
-  color:#fff;display:grid;place-items:center;font-size:0;font-weight:950;box-shadow:0 5px 11px #082d6225;position:relative
-}
-.export-calendar:before{content:"";width:27px;height:21px;border:3px solid #fff;border-radius:3px;display:block}
-.export-calendar:after{content:"";position:absolute;width:3px;height:13px;background:#fff;top:16px;left:26px;box-shadow:-9px 0 0 -0.5px #fff,9px 0 0 -0.5px #fff}
-.export-center{text-align:center;font-weight:650}
+.export-date-flex{display:flex;align-items:center;gap:13px}.export-center{text-align:center;font-weight:650}
 .export-course{text-align:center;font-size:25px;font-weight:750}.export-course b{font-weight:950}
 .export-rooms{font-size:24px;font-weight:750}.export-rooms div{line-height:1.5}.export-seats{text-align:center;font-size:24px}.export-seats div{line-height:1.5}
 .export-note{
@@ -251,8 +236,7 @@ button,input{font:inherit}button{touch-action:manipulation}
 @media(max-width:700px){
   .container{padding:12px 10px 42px}.hero{border-radius:20px;padding:23px 20px;display:block}
   .hero h1{font-size:31px}.hero p{font-size:14px}.hero-mark{display:none}
-  .card{border-radius:18px;padding:16px;margin-top:12px}.upload-grid{grid-template-columns:1fr;gap:12px}
-  .upload{min-height:150px;padding:18px}.form-row{grid-template-columns:1fr;gap:10px}
+  .card{border-radius:18px;padding:16px;margin-top:12px}  .form-row{grid-template-columns:1fr;gap:10px}
   .primary,.secondary{width:100%;min-height:48px}.result-head{align-items:flex-start;flex-direction:column}
   .pill{white-space:normal}.exam{grid-template-columns:1fr;padding:14px;gap:12px}.exam-time,.rooms{grid-column:auto}
   .actions{width:100%;flex-direction:column}.preview-toolbar .actions{display:none}
@@ -267,7 +251,7 @@ button,input{font:inherit}button{touch-action:manipulation}
 }
 @media(max-width:390px){
   .container{padding-left:8px;padding-right:8px}.hero h1{font-size:28px}.card{padding:13px}
-  .mobile-downloads{grid-template-columns:1fr}.upload strong{font-size:17px}
+  .mobile-downloads{grid-template-columns:1fr}
 }
 
 
@@ -303,18 +287,6 @@ button,input{font:inherit}button{touch-action:manipulation}
 .screen-row-2 td:first-child{border-left:4px solid #6251b7}
 .screen-row-3 td:first-child{border-left:4px solid #ee8b12}
 
-.calendar-glyph{
-  position:relative;display:block;width:17px;height:15px;border:2px solid currentColor;border-radius:2px;
-  color:#fff
-}
-.calendar-glyph:before{
-  content:"";position:absolute;left:2px;right:2px;top:4px;height:2px;background:currentColor;
-  box-shadow:0 4px 0 -0.3px currentColor
-}
-.calendar-glyph:after{
-  content:"";position:absolute;left:3px;top:-5px;width:3px;height:6px;border-radius:2px;background:currentColor;
-  box-shadow:8px 0 0 currentColor
-}
 .date-icon{display:inline-grid;place-items:center}
 
 /* Export V8: compact official-document proportions */
@@ -359,4 +331,90 @@ button,input{font:inherit}button{touch-action:manipulation}
   .routine-table .time-cell{font-size:11px}
   .routine-table .rooms-cell,.routine-table .seats-cell{font-size:11px}
   .routine-table .total-cell{font-size:13px}
+}
+
+/* V9 — universal exam type + deterministic calendar icon */
+.exam-type-field select{
+  width:100%;padding:13px 38px 13px 14px;border:1px solid var(--line);border-radius:11px;
+  font-size:16px;outline:none;background:#fff;color:var(--ink);appearance:auto
+}
+.exam-type-field select:focus{border-color:var(--blue);box-shadow:0 0 0 4px #1d5b9613}
+.calendar-svg{width:20px;height:20px;display:block;color:#fff}
+.date-icon .calendar-svg{width:18px;height:18px}
+.export-calendar .calendar-svg{width:29px;height:29px}
+.export-calendar{
+  display:grid!important;place-items:center!important;position:relative;
+  overflow:hidden
+}
+@media(max-width:1000px){
+  .form-row{grid-template-columns:minmax(0,1fr) minmax(170px,220px) auto}
+}
+@media(max-width:700px){
+  .form-row{grid-template-columns:1fr}
+  .exam-type-field select{min-height:48px}
+}
+
+.export-routine .export-title{white-space:nowrap}
+.export-routine .export-calendar{color:#fff!important}
+
+/* V10 — automatic Notice Board mode */
+.auto-card{border-color:#cfdaea;overflow:hidden}
+.auto-head{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}
+.auto-head h2{margin:5px 0 6px;font-size:clamp(22px,2.4vw,30px)}
+.auto-head p{margin:0;color:var(--muted);font-size:13px;line-height:1.5;max-width:780px}
+.live-badge{display:inline-flex;align-items:center;gap:8px;padding:9px 12px;border:1px solid #cfe0d8;border-radius:999px;background:#f2fbf6;color:#176a4b;font-size:12px;font-weight:900;white-space:nowrap}
+.live-badge span{width:8px;height:8px;border-radius:50%;background:#22a66d;box-shadow:0 0 0 4px #22a66d20}
+.auto-form{display:grid;grid-template-columns:minmax(0,1fr) 180px 150px 170px auto;gap:14px;align-items:end;margin-top:20px}
+.field select{width:100%;padding:13px 14px;border:1px solid var(--line);border-radius:11px;font-size:16px;outline:none;background:#fff;color:var(--ink)}
+.field select:focus{border-color:var(--blue);box-shadow:0 0 0 4px #1d5b9613}
+.auto-button{min-width:230px}
+.source-info{margin-top:14px;border:1px solid #cfe6d9;border-radius:14px;background:#f3fbf6;padding:13px 15px}
+.source-ok{display:flex;gap:10px;align-items:flex-start;color:#176a4b}
+.source-ok strong{display:block;font-size:13px}
+.source-ok small{display:block;margin-top:3px;color:#4d6d5d;line-height:1.4}
+.source-dot{width:25px;height:25px;border-radius:50%;display:grid;place-items:center;background:#19885f;color:white;font-weight:950;flex:none}
+.source-links{display:flex;gap:14px;flex-wrap:wrap;margin:10px 0 0 35px;font-size:12px;font-weight:850}
+.source-links a{color:#145391;text-decoration:none}.source-links a:hover{text-decoration:underline}.source-links span{color:#68788b}
+@media(max-width:1050px){.auto-form{grid-template-columns:1fr 1fr}.auto-button{grid-column:1/-1;width:100%}}
+@media(max-width:700px){.auto-head{display:block}.live-badge{margin-top:13px}.auto-form{grid-template-columns:1fr;gap:10px}.auto-button{grid-column:auto}.source-links{margin-left:0}}
+
+/* V15: automatic-only layout */
+.auto-card{margin-bottom:24px}.source-info{margin-top:14px}
+
+/* FINAL TABLE LAYOUT FIX
+   When no seat plan is available, the routine must have exactly four columns:
+   DATE / DAY / COURSE / TIME. */
+.routine-table.without-seats th:nth-child(1){width:18%}
+.routine-table.without-seats th:nth-child(2){width:15%}
+.routine-table.without-seats th:nth-child(3){width:45%}
+.routine-table.without-seats th:nth-child(4){width:22%}
+
+.export-table.without-seats th:nth-child(1){width:18%}
+.export-table.without-seats th:nth-child(2){width:15%}
+.export-table.without-seats th:nth-child(3){width:45%}
+.export-table.without-seats th:nth-child(4){width:22%}
+
+.routine-table.with-seats th:nth-child(1){width:11%}
+.routine-table.with-seats th:nth-child(2){width:9%}
+.routine-table.with-seats th:nth-child(3){width:38%}
+.routine-table.with-seats th:nth-child(4){width:15%}
+.routine-table.with-seats th:nth-child(5){width:7%}
+.routine-table.with-seats th:nth-child(6){width:12%}
+.routine-table.with-seats th:nth-child(7){width:8%}
+
+.export-table.with-seats th:nth-child(1){width:11%}
+.export-table.with-seats th:nth-child(2){width:9%}
+.export-table.with-seats th:nth-child(3){width:37%}
+.export-table.with-seats th:nth-child(4){width:15%}
+.export-table.with-seats th:nth-child(5){width:7%}
+.export-table.with-seats th:nth-child(6){width:12%}
+.export-table.with-seats th:nth-child(7){width:9%}
+
+.loading-button{position:relative;cursor:wait!important}
+.loading-button:after{content:"";display:inline-block;width:13px;height:13px;margin-left:9px;border:2px solid #ffffff55;border-top-color:#fff;border-radius:50%;vertical-align:-2px;animation:spin .8s linear infinite}
+
+@media(max-width:700px){
+  .routine-table.without-seats{min-width:680px}
+  .routine-table.with-seats{min-width:1040px}
+  .export-routine .export-title{font-size:47px}
 }
