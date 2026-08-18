@@ -1,4 +1,4 @@
-const API = "[https://examroutine.onrender.com]";
+const API = "https://examroutine.onrender.com";
 
 const $ = id => document.getElementById(id);
 
