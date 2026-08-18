@@ -36,7 +36,46 @@ _CACHE: dict[tuple, tuple[float, dict]] = {}
 _CACHE_LOCK = Lock()
 _INFLIGHT_LOCK = Lock()
 _INFLIGHT: set[tuple] = set()
-CACHE_SECONDS = 300
+CACHE_SECONDS = 900
+
+
+def ensure_playwright_browser() -> None:
+    """Install Chromium at startup if the Render build skipped it.
+
+    Safe no-op when the browser is already present. Avoids the common
+    production error: BrowserType.launch Executable does not exist.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        return
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            browser.close()
+        return
+    except Exception:
+        pass
+    try:
+        import subprocess
+        import sys
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            check=False,
+            timeout=300,
+        )
+    except Exception:
+        pass
+
+
+@app.on_event("startup")
+def _startup_browser() -> None:
+    ensure_playwright_browser()
+
+
 
 
 def _write_temp(raw: bytes, file_type: str) -> str:
@@ -73,7 +112,7 @@ def _cache_get(key):
 
 def _cache_put(key, value):
     with _CACHE_LOCK:
-        if len(_CACHE) > 40:
+        if len(_CACHE) > 80:
             oldest = min(_CACHE.items(), key=lambda kv: kv[1][0])[0]
             _CACHE.pop(oldest, None)
         _CACHE[key] = (time.monotonic(), value)
@@ -174,13 +213,22 @@ def auto_analyze(
 
         routine_path = _write_temp(docs["routine"]["bytes"], docs["routine"]["file_type"])
         if docs.get("seat_plan"):
-            seat_path = _write_temp(docs["seat_plan"]["bytes"], docs["seat_plan"]["file_type"])
+            try:
+                seat_path = _write_temp(docs["seat_plan"]["bytes"], docs["seat_plan"]["file_type"])
+            except Exception:
+                seat_path = None
 
         routine = parse_exam_routine(routine_path)
         if not routine.get("exams"):
             raise ValueError("The official routine was found, but no examination rows could be parsed.")
 
-        seat_plan = parse_seat_plan(seat_path) if seat_path else None
+        seat_plan = None
+        if seat_path:
+            try:
+                seat_plan = parse_seat_plan(seat_path)
+            except Exception:
+                seat_plan = None  # Seat plan is optional — continue with routine only.
+
         result = build_student_routine(routine, seat_plan, section)
 
         if not result["exams"]:
@@ -188,10 +236,12 @@ def auto_analyze(
                 f"No examinations were found for batch {result['batch']} in the selected routine."
             )
 
-        if seat_path and result["matched_seat_count"] < result["exam_count"]:
+        if seat_plan and result["matched_seat_count"] < result["exam_count"]:
             result["warnings"].append(
                 f"Seat allocation matched {result['matched_seat_count']} of {result['exam_count']} examinations."
             )
+        if docs.get("seat_plan") and not seat_plan:
+            result["warnings"].append("Seat plan was found but could not be parsed; showing routine only.")
 
         result.update(
             {

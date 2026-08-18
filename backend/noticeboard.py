@@ -55,6 +55,31 @@ EXAM_TYPES = ("mid", "final")
 
 # Shared caches: avoid re-crawling the notice board for every student click.
 _CANDIDATE_CACHE: dict[tuple, tuple[float, list]] = {}
+# Document cache: one routine (+ optional seat plan) per exam session is enough
+# for every section. Different sections only need re-matching, not re-download.
+_DOC_CACHE: dict[tuple, tuple[float, dict]] = {}
+DOC_CACHE_SECONDS = 900
+_DOC_INFLIGHT: set[tuple] = set()
+
+
+def _launch_browser(pw):
+    """Launch Chromium headless. Returns None if the browser binary is missing."""
+    try:
+        return pw.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-extensions",
+                "--single-process",
+            ],
+        )
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Playwright Chromium unavailable: %s", exc)
+        return None
+
+
 
 HEADERS = {
     "User-Agent": (
@@ -317,10 +342,9 @@ def collect_notice_candidates(semester: str, year: Optional[int], exam_type: str
         return []
     network = []
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-extensions"],
-        )
+        browser = _launch_browser(pw)
+        if browser is None:
+            return []
         context = browser.new_context(
             user_agent=HEADERS["User-Agent"],
             viewport={"width": 1280, "height": 900},
@@ -781,7 +805,9 @@ def _inspect_routine_documents(session, candidates, section, exam_type, semester
 
     # Phase 2: detail pages via Playwright (only top CSE-ish)
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        browser = _launch_browser(pw)
+        if browser is None:
+            return best
         context = browser.new_context(user_agent=HEADERS["User-Agent"], accept_downloads=True)
         page = context.new_page()
         try:
@@ -882,6 +908,27 @@ def _slugify_notice_title(text: str) -> str:
     s = s.replace("&", " and ")
     s = re.sub(r"[^a-z0-9]+", "-", s)
     return s.strip("-")
+
+
+
+def _routine_notice_fallback_urls(exam_type: str, semester: str, year: Optional[int]) -> list[str]:
+    """Deterministic DIU slug patterns for CSE routines (mid and final)."""
+    if not year:
+        return []
+    y = int(year)
+    e = "mid" if exam_type == "mid" else "final"
+    patterns = [
+        f"updated-cse-{e}-examination-routine-{semester}-{y}-cse",
+        f"updated-cse-{e}-exam-routine-{semester}-{y}-cse",
+        f"updated-cse-exam-routine-{e}-semester-{semester}-{y}-cse",
+        f"cse-{e}-examination-routine-{semester}-{y}-cse",
+        f"cse-{e}-exam-routine-{semester}-{y}-cse",
+        f"{e}-examination-routine-{semester}-{y}-cse",
+        f"{e}-exam-routine-{semester}-{y}-cse",
+        f"updated-cse-{e}-examination-routine-{semester}-{y}",
+        f"cse-{e}-examination-routine-{semester}-{y}",
+    ]
+    return [absolute(f"/noticeboard/{x}") for x in patterns]
 
 
 def _seat_notice_fallback_urls(exam_type: str, semester: str, year: Optional[int]) -> list[str]:
@@ -1101,10 +1148,9 @@ def _inspect_seat_plan(session, candidates, routine, section, exam_type, semeste
         reverse=True,
     )
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
-        )
+        browser = _launch_browser(pw)
+        if browser is None:
+            return None
         context = browser.new_context(user_agent=HEADERS["User-Agent"], accept_downloads=True)
         page = context.new_page()
         page.set_default_timeout(10_000)
@@ -1160,64 +1206,142 @@ def _inspect_seat_plan(session, candidates, routine, section, exam_type, semeste
 
 
 def discover_documents(section: str, exam_type: str, semester: str, year: Optional[int]=None, include_seat_plan: bool=True) -> dict:
-    section=normalize_section(section)
-    exam_type=normalize_exam_type(exam_type)
-    semester=normalize_semester(semester)
-    if exam_type not in EXAM_TYPES: raise ValueError("Exam type must be Mid or Final.")
-    if semester not in SEMESTERS: raise ValueError("Semester must be Spring, Summer, or Fall.")
-    if year is not None and not 2000 <= int(year) <= 2100: raise ValueError("Invalid academic year.")
+    section = normalize_section(section)
+    exam_type = normalize_exam_type(exam_type) or (exam_type or "").lower().strip()
+    semester = normalize_semester(semester) or (semester or "").lower().strip()
+    if exam_type not in EXAM_TYPES:
+        raise ValueError("Exam type must be Mid or Final.")
+    if semester not in SEMESTERS:
+        raise ValueError("Semester must be Spring, Summer, or Fall.")
+    if year is not None and not 2000 <= int(year) <= 2100:
+        raise ValueError("Invalid academic year.")
 
-    session=requests.Session(); session.headers.update(HEADERS)
-    candidates=collect_notice_candidates(semester,year,exam_type)
-    if not candidates:
-        candidates=static_collect_notices(session,semester,year,exam_type)
-    if not candidates:
-        raise RuntimeError("The DIU Notice Board could not be read. Please try again in a moment.")
+    year_i = int(year) if year is not None else None
+    doc_key = (exam_type, semester, year_i)
 
-    routines=_inspect_routine_documents(session,candidates,section,exam_type,semester,year)
-    if not routines:
-        raise RuntimeError(
-            f"The DIU Notice Board was reached, but no {semester.title()} {year or ''} CSE {exam_type.title()} "
-            f"routine containing batch {normalize_batch(section)} was verified. "
-            f"Try again shortly, or check that the official notice has been published."
-        )
+    # --- Fast path: reuse previously downloaded routine/seat for this session ---
+    cached = _DOC_CACHE.get(doc_key)
+    if cached:
+        created, payload = cached
+        if time.monotonic() - created < DOC_CACHE_SECONDS and payload.get("routine"):
+            # If caller does not need seat plan, or seat is already present / was searched.
+            if (not include_seat_plan) or payload.get("seat_searched"):
+                return {
+                    "routine": dict(payload["routine"]),
+                    "seat_plan": (dict(payload["seat_plan"]) if payload.get("seat_plan") else None),
+                    "source": NOTICEBOARD_URL,
+                    "from_cache": True,
+                }
 
-    # Prefer: more exams for this batch, "updated" notices, then higher score.
-    batch = normalize_batch(section)
+    # Coalesce concurrent discovers for the same exam session.
+    wait_deadline = time.monotonic() + 75
+    while doc_key in _DOC_INFLIGHT and time.monotonic() < wait_deadline:
+        time.sleep(0.4)
+        cached = _DOC_CACHE.get(doc_key)
+        if cached:
+            created, payload = cached
+            if time.monotonic() - created < DOC_CACHE_SECONDS and payload.get("routine"):
+                if (not include_seat_plan) or payload.get("seat_searched"):
+                    return {
+                        "routine": dict(payload["routine"]),
+                        "seat_plan": (dict(payload["seat_plan"]) if payload.get("seat_plan") else None),
+                        "source": NOTICEBOARD_URL,
+                        "from_cache": True,
+                    }
+    _DOC_INFLIGHT.add(doc_key)
 
-    def _routine_rank(x):
-        title = norm(f"{x.get('title','')} {x.get('detail_title','')} {x.get('final_url','')} {x.get('url','')}")
-        exams = x.get("parsed_routine", {}).get("exams", [])
-        batch_exams = sum(1 for e in exams if normalize_batch(e.get("batch")) == batch)
-        updated = 1 if "updated" in title.lower() else 0
-        return (batch_exams, updated, x.get("score", 0))
+    try:
+        session = requests.Session()
+        session.headers.update(HEADERS)
 
-    routine = max(routines, key=_routine_rank)
+        candidates = collect_notice_candidates(semester, year_i, exam_type)
+        if not candidates:
+            candidates = static_collect_notices(session, semester, year_i, exam_type)
 
-    # Seat plan is optional — never fail the whole request if it is missing or slow.
-    seat = None
-    if include_seat_plan:
-        try:
-            seat = _inspect_seat_plan(session, candidates, routine, section, exam_type, semester, year)
-        except Exception:
-            seat = None
+        # Inject deterministic routine + seat slug URLs so mid/final still work
+        # even when the notice board card is not rendered yet.
+        seen = {c.get("url") for c in candidates}
+        for u in _routine_notice_fallback_urls(exam_type, semester, year_i):
+            if u not in seen:
+                candidates.append({
+                    "url": u,
+                    "title": f"Updated CSE {exam_type.title()} Examination Routine {semester.title()} {year_i}",
+                    "context": f"CSE {exam_type} examination routine {semester} {year_i} updated",
+                    "source": NOTICEBOARD_URL,
+                    "score_hint": 1200,
+                })
+                seen.add(u)
+        for u in _seat_notice_fallback_urls(exam_type, semester, year_i):
+            if u not in seen:
+                candidates.append({
+                    "url": u,
+                    "title": f"{exam_type.title()} Examination Seat Plan ({semester.title()}-{year_i})",
+                    "context": f"CSE {exam_type} examination seat plan {semester} {year_i}",
+                    "source": NOTICEBOARD_URL,
+                    "score_hint": 900,
+                })
+                seen.add(u)
 
-    return {
-        "routine": {
-            "url": routine.get("final_url") or routine.get("url"),
-            "title": routine.get("detail_title") or routine.get("title") or "CSE Examination Routine",
-            "bytes": routine["bytes"],
-            "file_type": routine["file_type"],
-            "exam_type": exam_type,
-            "semester": semester.title(),
-            "year": year,
-        },
-        "seat_plan": ({
-            "url": seat.get("final_url") or seat.get("url"),
-            "title": seat.get("detail_title") or seat.get("title") or "CSE Examination Seat Plan",
-            "bytes": seat["bytes"],
-            "file_type": seat["file_type"],
-        } if seat else None),
-        "source": NOTICEBOARD_URL,
-    }
+        if not candidates:
+            raise RuntimeError("The DIU Notice Board could not be read. Please try again in a moment.")
+
+        routines = _inspect_routine_documents(session, candidates, section, exam_type, semester, year_i)
+        if not routines:
+            raise RuntimeError(
+                f"No {semester.title()} {year_i or ''} CSE {exam_type.title()} routine "
+                f"containing batch {normalize_batch(section)} was verified. "
+                f"The official notice may not be published yet — try again later."
+            )
+
+        batch = normalize_batch(section)
+
+        def _routine_rank(x):
+            title = norm(f"{x.get('title','')} {x.get('detail_title','')} {x.get('final_url','')} {x.get('url','')}")
+            exams = x.get("parsed_routine", {}).get("exams", [])
+            batch_exams = sum(1 for e in exams if normalize_batch(e.get("batch")) == batch)
+            updated = 1 if "updated" in title.lower() else 0
+            return (batch_exams, updated, x.get("score", 0))
+
+        routine = max(routines, key=_routine_rank)
+
+        seat = None
+        if include_seat_plan:
+            try:
+                seat = _inspect_seat_plan(session, candidates, routine, section, exam_type, semester, year_i)
+            except Exception:
+                seat = None
+
+        result = {
+            "routine": {
+                "url": routine.get("final_url") or routine.get("url"),
+                "title": routine.get("detail_title") or routine.get("title") or "CSE Examination Routine",
+                "bytes": routine["bytes"],
+                "file_type": routine["file_type"],
+                "exam_type": exam_type,
+                "semester": semester.title(),
+                "year": year_i,
+            },
+            "seat_plan": ({
+                "url": seat.get("final_url") or seat.get("url"),
+                "title": seat.get("detail_title") or seat.get("title") or "CSE Examination Seat Plan",
+                "bytes": seat["bytes"],
+                "file_type": seat["file_type"],
+            } if seat else None),
+            "source": NOTICEBOARD_URL,
+        }
+
+        # Cache for all sections of this exam session. Always store seat_plan key
+        # (None if missing) so later callers know we already searched.
+        _DOC_CACHE[doc_key] = (time.monotonic(), {
+            "routine": dict(result["routine"]),
+            "seat_plan": (dict(result["seat_plan"]) if result.get("seat_plan") else None),
+            "seat_searched": bool(include_seat_plan),
+        })
+        if len(_DOC_CACHE) > 16:
+            oldest = min(_DOC_CACHE.items(), key=lambda kv: kv[1][0])[0]
+            _DOC_CACHE.pop(oldest, None)
+
+        return result
+    finally:
+        _DOC_INFLIGHT.discard(doc_key)
 

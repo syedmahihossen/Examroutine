@@ -5,6 +5,41 @@ from typing import Any, Optional
 import pdfplumber
 from openpyxl import load_workbook
 
+import hashlib
+_PARSE_CACHE: dict[str, tuple[float, object]] = {}
+_PARSE_CACHE_TTL = 900
+
+def _content_key(path: str) -> str:
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(1 << 20)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _cache_get_parse(key: str):
+    import time
+    item = _PARSE_CACHE.get(key)
+    if not item:
+        return None
+    created, value = item
+    if time.monotonic() - created > _PARSE_CACHE_TTL:
+        _PARSE_CACHE.pop(key, None)
+        return None
+    return value
+
+
+def _cache_put_parse(key: str, value):
+    import time
+    if len(_PARSE_CACHE) > 24:
+        oldest = min(_PARSE_CACHE.items(), key=lambda kv: kv[1][0])[0]
+        _PARSE_CACHE.pop(oldest, None)
+    _PARSE_CACHE[key] = (time.monotonic(), value)
+
+
 
 def norm(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
@@ -254,8 +289,14 @@ def _parse_xlsx_exam_routine(path: str) -> dict:
 
 
 def parse_exam_routine(path: str) -> dict:
+    key = "routine:" + _content_key(path)
+    cached = _cache_get_parse(key)
+    if cached is not None:
+        return cached
     if path.lower().endswith((".xlsx", ".xlsm", ".xltx", ".xltm")):
-        return _parse_xlsx_exam_routine(path)
+        result = _parse_xlsx_exam_routine(path)
+        _cache_put_parse(key, result)
+        return result
     exams, pending = [], []
     metadata = {"semester": "", "year": None, "slot_times": {}}
     with pdfplumber.open(path) as pdf:
@@ -276,7 +317,9 @@ def parse_exam_routine(path: str) -> dict:
             for table in page.extract_tables():
                 exams.extend(_parse_table_exam_rows(table, page_no, pending, metadata["slot_times"]))
     unique = {(e["date"], e["slot"], e["course_code"], e["batch"]): e for e in exams if e.get("date")}
-    return {"semester": metadata["semester"], "year": metadata["year"], "slot_times": metadata["slot_times"], "exams": sorted(unique.values(), key=lambda x:(x["date"],x["slot"],x["course_code"]))}
+    result = {"semester": metadata["semester"], "year": metadata["year"], "slot_times": metadata["slot_times"], "exams": sorted(unique.values(), key=lambda x:(x["date"],x["slot"],x["course_code"]))}
+    _cache_put_parse(key, result)
+    return result
 
 
 # ===================== SEAT PLAN =====================
@@ -290,6 +333,10 @@ def parse_seat_plan(path: str) -> list[dict]:
     Course code is inherited across page breaks because DIU often starts a
     continuation page with a section row that omits the course columns.
     """
+    key = "seat:" + _content_key(path)
+    cached = _cache_get_parse(key)
+    if cached is not None:
+        return cached
     if not path.lower().endswith(".pdf"):
         raise ValueError("Seat plan must be a PDF")
 
@@ -343,14 +390,15 @@ def parse_seat_plan(path: str) -> list[dict]:
         seen = set()
         rooms = []
         for r in a["rooms"]:
-            key = (r["room"], r["seats"])
-            if key not in seen:
-                seen.add(key)
+            room_key = (r["room"], r["seats"])
+            if room_key not in seen:
+                seen.add(room_key)
                 rooms.append(r)
         a["rooms"] = rooms
         if a["total"] is None:
             a["total"] = sum(r["seats"] for r in rooms)
 
+    _cache_put_parse(key, allocations)
     return allocations
 
 

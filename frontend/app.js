@@ -59,14 +59,23 @@ async function autoAnalyze() {
   $("result").classList.add("hidden");
   $("preview").classList.add("hidden");
   $("sourceInfo").classList.add("hidden");
-  status(
-    "Checking the DIU Notice Board, finding the official routine and matching the seat plan… This may take up to a minute on a free backend.",
-    false,
-    true
-  );
+
+  const steps = [
+    "Connecting to the DIU Notice Board…",
+    "Finding the official CSE routine…",
+    "Downloading and checking the routine…",
+    "Matching your section with the seat plan…",
+    "Almost done — building your routine…"
+  ];
+  let step = 0;
+  status(steps[0], false, true);
+  const progress = setInterval(() => {
+    step = Math.min(step + 1, steps.length - 1);
+    status(steps[step], false, true);
+  }, 4500);
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 180000);
+  const timer = setTimeout(() => controller.abort(), 120000);
 
   try {
     const q = new URLSearchParams({
@@ -89,7 +98,7 @@ async function autoAnalyze() {
       if (Array.isArray(body.detail)) {
         message = body.detail.map(x => x.msg || "Validation error").join(", ");
       }
-      throw new Error(message);
+      throw new Error(typeof message === "string" ? message : "Automatic lookup failed.");
     }
 
     data = body;
@@ -102,14 +111,21 @@ async function autoAnalyze() {
       : "No matching seat plan was available, so the routine is shown without room/seat columns.";
 
     const scope = body.seat_plan_available ? body.section : `Batch ${body.batch}`;
-    status(`Done. Found ${body.exam_count} examination(s) for ${scope}. ${seatMessage}`);
+    const cacheHint = body.cached ? " (cached — instant)" : "";
+    status(`Done. Found ${body.exam_count} examination(s) for ${scope}. ${seatMessage}${cacheHint}`);
   } catch (e) {
     console.error(e);
-    const message = e.name === "AbortError"
-      ? "The lookup timed out. The DIU Notice Board or free backend may be slow. Please try again."
-      : e.message || "Automatic lookup failed.";
+    let message;
+    if (e.name === "AbortError") {
+      message = "The lookup timed out. Please try again — the second attempt is usually much faster.";
+    } else if (String(e.message || "").includes("Failed to fetch") || String(e.message || "").includes("NetworkError")) {
+      message = "Could not reach the server. Check your connection or try again in a moment.";
+    } else {
+      message = e.message || "Automatic lookup failed.";
+    }
     status(message, true);
   } finally {
+    clearInterval(progress);
     clearTimeout(timer);
     setBusy(false);
   }
