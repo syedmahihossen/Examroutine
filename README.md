@@ -1,4 +1,4 @@
-# ExamRoutine Auto v8
+# ExamRoutine
 
 Fast automatic CSE Mid/Final exam routine generator for DIU.
 
