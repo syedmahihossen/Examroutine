@@ -1,150 +1,47 @@
-# ExamRoutine Auto v8.1
+# 🎓 DIU ExamRoutine
 
-Fast automatic CSE Mid/Final exam routine generator for DIU students.
+An automated, zero-latency exam routine and seat plan finder designed specifically for Daffodil International University (DIU) CSE students. 
 
-**New in v8.1**
-- Proactive background refresh (GitHub Actions) so new routines are discovered *before* students click
-- Longer cache TTL (30 min)
-- Protected `/api/refresh` endpoint
-- Frontend ready for **Cloudflare Pages**
-- Clear free deployment path
+Instead of manually scrolling through massive, unformatted PDF documents, students can simply enter their section (e.g., `65_L`) and instantly receive a personalized, clearly formatted schedule complete with room numbers and seat allocations.
 
----
+## ✨ Features
 
-## Architecture (Free & Fast)
-
-| Part              | Service              | Cost     | Purpose                                      |
-|-------------------|----------------------|----------|----------------------------------------------|
-| Frontend          | Cloudflare Pages     | Free     | Static site, global CDN, instant             |
-| Backend API       | Render               | Free     | Playwright discovery + PDF/XLSX parsing      |
-| Auto-refresh      | GitHub Actions       | Free     | Checks notice board every 25 min, warms cache|
-
-Students almost never wait for a cold Playwright crawl because the scheduled job keeps the cache warm.
+* **⚡ Zero-Latency Search:** Routine data is pre-processed and cached, delivering personalized schedules to students in milliseconds.
+* **🪑 Automated Seat Plan Mapping:** Cross-references the official routine with seat plan documents to automatically assign rooms and seat ranges to specific sections.
+* **🌙 Premium Dark UI:** A polished, modern, and professional dark-themed user interface optimized for readability.
+* **📥 Export Options:** Students can easily download their personalized routines as PNG or PDF files for offline viewing.
 
 ---
 
-## Features
+## 🏗️ System Architecture & Data Flow
 
-- Mid and Final only
-- Spring, Summer, Fall
-- Any academic year
-- Any CSE section (`65_L`, `65_N`, `66_A`, …)
-- Automatic DIU Notice Board discovery
-- Supports PDF and XLSX exam routines
-- Finds separate seat-plan notice when available
-- Seat plan is optional (ROOM / SEATS / TOTAL only appear when matched)
-- 30-minute result + document cache
-- Prevents duplicate simultaneous crawls
-- PNG / PDF export
+ExamRoutine utilizes a hybrid, event-driven architecture designed for instant user experiences and minimal server cost. By decoupling the scraping engine from the frontend, the application ensures that users never have to wait for a backend server to wake up or parse PDFs in real-time.
 
----
-
-## 1. Deploy Backend (Render – Free)
-
-1. Push this repository to GitHub.
-2. Go to [render.com](https://render.com) → **New → Web Service**.
-3. Connect the repository.
-4. Settings:
-   - **Root Directory**: leave empty (or set to project root)
-   - **Build Command**:  
-     `pip install -r backend/requirements.txt && python -m playwright install chromium`
-   - **Start Command**:  
-     `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`
-   - **Health Check Path**: `/api/health`
-5. After deploy, open the service → **Environment**.
-   - Copy the value of `REFRESH_SECRET` (Render generates it automatically if you used `render.yaml`).
-6. Note your backend URL, e.g. `https://examroutine-api.onrender.com`.
-
-> Free Render instances sleep after ~15 min of inactivity.  
-> The GitHub Actions job will wake them up regularly.
+1. **Automated Trigger (GitHub Actions):** A cron job runs a workflow every 30 minutes, acting as a background alarm clock.
+2. **Smart Scraper (Render - Python/FastAPI):** 
+   * Wakes up and checks the official DIU Notice Board.
+   * Compares the latest PDF URL against a saved Firebase bookmark. If the URL hasn't changed, the server immediately stops to conserve resources.
+   * If a new PDF is detected, it downloads the documents.
+3. **Data Extraction (Regex):** The backend parses the PDF, dynamically utilizes Regular Expressions (Regex) to identify every single active section (e.g., `65_L`, `64_M`), and maps their individual exam schedules and seat plans.
+4. **Real-time Cache (Firebase RTDB):** The parsed, structured JSON for every discovered section is pushed to Firebase in a massive batch, acting as a high-speed database cache.
+5. **Instant Frontend (Cloudflare Pages):** When a student searches for their section, the static frontend queries Firebase directly. The data loads in milliseconds without ever touching the Python backend. If a typo occurs, the UI gracefully handles the error.
 
 ---
 
-## 2. Deploy Frontend (Cloudflare Pages – Free)
+## 🛠️ Tech Stack
 
-1. Go to [dash.cloudflare.com](https://dash.cloudflare.com) → **Workers & Pages** → **Create** → **Pages**.
-2. Connect the same GitHub repository.
-3. Build settings:
-   - **Framework preset**: None
-   - **Build command**: leave empty
-   - **Build output directory**: `frontend`
-4. Deploy.
-
-After deploy, the site will use the production API URL defined in `frontend/app.js`  
-(`https://examroutine.onrender.com` by default).  
-
-If your Render URL is different, either:
-
-- Change the fallback URL inside `frontend/app.js`, **or**
-- Open the site with `?api=https://your-backend.onrender.com`
+* **Frontend:** Vanilla JavaScript, HTML5, CSS3 (Hosted on Cloudflare Pages)
+* **Backend Engine:** Python, FastAPI, Requests, Regex (Hosted on Render)
+* **Database/Cache:** Firebase Realtime Database (Secured via REST Auth)
+* **Automation:** GitHub Actions (Cron scheduling)
 
 ---
 
-## 3. Enable Automatic Refresh (GitHub Actions – Free)
 
-1. In your GitHub repository go to **Settings → Secrets and variables → Actions**.
-2. Add two **Repository secrets**:
-   - `BACKEND_URL` → `https://your-service.onrender.com` (no trailing slash)
-   - `REFRESH_SECRET` → the same secret you set/copied from Render
-3. (Optional) Add repository **Variables** if you want different defaults:
-   - `DEFAULT_SECTION` = `65_L`
-   - `DEFAULT_SEMESTER` = `summer`
-   - `DEFAULT_YEAR` = `2026`
-   - `DEFAULT_EXAM_TYPE` = `final`
 
-The workflow (`.github/workflows/refresh-routine.yml`) runs every 25 minutes and also supports manual runs from the Actions tab.
+👨‍💻 Author
+Syed Mahi Hosen
 
----
+Computer Science and Engineering (CSE)
 
-## Local Development
-
-### Backend
-
-```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python -m playwright install chromium
-uvicorn main:app --reload --host 127.0.0.1 --port 8000
-```
-
-### Frontend
-
-```bash
-cd frontend
-python3 -m http.server 5500 --bind 127.0.0.1
-```
-
-Open http://127.0.0.1:5500
-
----
-
-## API
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/health` | Health check |
-| `GET /api/auto-analyze?section=65_L&exam_type=final&semester=summer&year=2026` | Main endpoint used by the frontend |
-| `GET/POST /api/refresh?exam_type=final&semester=summer&year=2026&secret=...` | Force refresh (used by GitHub Actions) |
-| `GET /api/cache-status` | Cache diagnostics |
-| `GET /api/discovery-debug?...` | See what the notice-board crawler finds |
-
----
-
-## Important behaviour
-
-- A missing seat plan is **not** treated as an error. The routine is still shown.
-- Room / Seats / Total columns appear only when a matching seat plan is verified.
-- The crawler ranks notice cards first, then opens only the strongest candidates.
-- Document cache is shared across all sections of the same exam session (one download serves everyone).
-
----
-
-## Tips for best free experience
-
-1. After deploying, manually trigger the GitHub Action once to warm the cache.
-2. If the first request after a long sleep is slow, wait 30–60 seconds and try again (Render is waking up).
-3. You can change the cron frequency in the workflow file if needed (e.g. every 15 min).
-
-Enjoy the faster experience!
+Daffodil International University (DIU)
