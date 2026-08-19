@@ -137,7 +137,13 @@ async function autoAnalyze() {
     });
 
     const body = await response.json().catch(() => ({}));
+    
     if (!response.ok) {
+      // Specifically catch 404 Not Found or empty results
+      if (response.status === 404 || (body.detail && String(body.detail).includes("not found"))) {
+          throw new Error("Section not found in the official routine. Please check your spelling and try again.");
+      }
+      
       let message = body.detail || `Server error (${response.status})`;
       if (Array.isArray(body.detail)) {
         message = body.detail.map(x => x.msg || "Validation error").join(", ");
