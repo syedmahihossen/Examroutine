@@ -347,12 +347,14 @@ def refresh_documents(
                 section_db_url = f"https://examroutine-d5392-default-rtdb.firebaseio.com/routines/{sec}.json?auth={FIREBASE_SECRET}"
                 requests.put(section_db_url, json=result, timeout=5)
                 print(f"Background Sync: Updated {sec}")
-        new_metadata = {"routine_url": current_routine_url}
-        metadata_url = f"https://examroutine-d5392-default-rtdb.firebaseio.com/metadata.json?auth={FIREBASE_SECRET}"
-        requests.put(metadata_url, json=new_metadata, timeout=5)
 
         # 6. Update our bookmark in Firebase
-        new_metadata = {"routine_url": current_routine_url}
+        new_metadata = {
+            "routine_url": current_routine_url,
+            "seat_plan_url": seat_path if seat_path else None
+                       
+        }
+        metadata_url = f"https://examroutine-d5392-default-rtdb.firebaseio.com/metadata.json?auth={FIREBASE_SECRET}"
         requests.put(metadata_url, json=new_metadata, timeout=5)
 
         return {
