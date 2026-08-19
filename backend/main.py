@@ -2,6 +2,7 @@ from __future__ import annotations
 import requests
 import re
 FIREBASE_BASE_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines"
+FIREBASE_SECRET = "TLC3hRT91gy6h78O2EwQ2NLxbNwRTTM4IWrlzd5C"
 import os
 import tempfile
 import time
@@ -340,9 +341,12 @@ def refresh_documents(
                     "cached": True, 
                 })
                 
-                section_db_url = f"https://examroutine-d5392-default-rtdb.firebaseio.com/routines/{sec}.json"
+                section_db_url = f"https://examroutine-d5392-default-rtdb.firebaseio.com/routines/{sec}.json?auth={FIREBASE_SECRET}"
                 requests.put(section_db_url, json=result, timeout=5)
                 print(f"Background Sync: Updated {sec}")
+        new_metadata = {"routine_url": current_routine_url}
+        metadata_url = f"https://examroutine-d5392-default-rtdb.firebaseio.com/metadata.json?auth={FIREBASE_SECRET}"
+        requests.put(metadata_url, json=new_metadata, timeout=5)
 
         # 6. Update our bookmark in Firebase
         new_metadata = {"routine_url": current_routine_url}
