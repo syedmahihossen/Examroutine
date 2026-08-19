@@ -1,5 +1,6 @@
 from __future__ import annotations
 import requests
+import re
 FIREBASE_BASE_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines"
 import os
 import tempfile
@@ -261,54 +262,107 @@ def refresh_documents(
     exam_type: str = Query("final"),
     semester: str = Query("summer"),
     year: Optional[int] = Query(None),
-    section: str = Query("65_L"),
     secret: Optional[str] = Query(None),
 ):
-    """Force a fresh discovery of the official routine + seat plan.
-
-    Designed to be called by GitHub Actions (or any free cron) every 20–30 min.
-    This keeps the in-memory document cache warm so students get instant results.
-
-    Protect with REFRESH_SECRET environment variable when deployed.
-    """
+    """Check for new routines, dynamically find ALL sections, and sync to Firebase."""
     if REFRESH_SECRET and secret != REFRESH_SECRET:
         raise HTTPException(403, "Invalid or missing refresh secret.")
 
     exam_type = exam_type.lower().strip()
     semester = semester.lower().strip()
-    section = section.strip().upper().replace("-", "_")
 
-    if exam_type not in ("mid", "final"):
-        raise HTTPException(400, "Exam type must be Mid or Final.")
-    if semester not in ("spring", "summer", "fall"):
-        raise HTTPException(400, "Semester must be Spring, Summer, or Fall.")
+    # 1. Fetch our bookmark to see what we last processed
+    metadata_url = "https://examroutine-d5392-default-rtdb.firebaseio.com/metadata.json"
+    try:
+        meta_resp = requests.get(metadata_url, timeout=5)
+        last_metadata = meta_resp.json() or {}
+        last_routine_url = last_metadata.get("routine_url", "")
+    except Exception:
+        last_routine_url = ""
 
     try:
-        # Force a live discovery. discover_documents already has its own
-        # document-level cache; calling it here warms that cache for everyone.
+        # 2. Check the Notice Board for the latest document
         docs = discover_documents(
-            section=section,
+            section="65_L", # Dummy section just to trigger discovery
             exam_type=exam_type,
             semester=semester,
             year=year,
             include_seat_plan=True,
         )
+        
+        current_routine_url = docs["routine"]["url"]
+
+        # 3. THE CATCH: Stop if the routine hasn't changed
+        if current_routine_url == last_routine_url:
+            print("No new routine found. Doing nothing.")
+            return {
+                "ok": True, 
+                "message": "Latest routine is already synced. Doing nothing.",
+                "routine_url": current_routine_url
+            }
+
+        # 4. Parse the new documents
+        print(f"New routine detected: {current_routine_url}. Processing...")
+        routine_path = _write_temp(docs["routine"]["bytes"], docs["routine"]["file_type"])
+        seat_path = None
+        if docs.get("seat_plan"):
+            try:
+                seat_path = _write_temp(docs["seat_plan"]["bytes"], docs["seat_plan"]["file_type"])
+            except Exception:
+                pass
+
+        routine_data = parse_exam_routine(routine_path)
+        seat_plan_data = parse_seat_plan(seat_path) if seat_path else None
+
+        # --- THE MAGIC: DYNAMICALLY FIND EVERY SECTION ---
+        # Convert the entire parsed routine to a string and use Regex to find every 
+        # pattern that looks like a DIU section (e.g., 65_L, 64_M, 66_A)
+        routine_string = str(routine_data)
+        found_sections = set(re.findall(r'\d{2,3}_[A-Z0-9]+', routine_string))
+        
+        # Convert the set back to a sorted list
+        target_sections = sorted(list(found_sections))
+        print(f"Discovered {len(target_sections)} unique sections in the routine.")
+        # -------------------------------------------------
+
+        # 5. Build and push the routine for every single discovered section
+        for sec in target_sections:
+            result = build_student_routine(routine_data, seat_plan_data, sec)
+            
+            # Only push to Firebase if the section actually has exams scheduled
+            if result.get("exams") and len(result["exams"]) > 0:
+                result.update({
+                    "exam_type": exam_type,
+                    "semester": result.get("semester") or semester.title(),
+                    "year": result.get("year") or year,
+                    "seat_plan_found": bool(seat_path),
+                    "seat_plan_available": result.get("matched_seat_count", 0) > 0,
+                    "cached": True, 
+                })
+                
+                section_db_url = f"https://examroutine-d5392-default-rtdb.firebaseio.com/routines/{sec}.json"
+                requests.put(section_db_url, json=result, timeout=5)
+                print(f"Background Sync: Updated {sec}")
+
+        # 6. Update our bookmark in Firebase
+        new_metadata = {"routine_url": current_routine_url}
+        requests.put(metadata_url, json=new_metadata, timeout=5)
+
         return {
-            "ok": True,
-            "message": "Documents refreshed successfully.",
-            "exam_type": exam_type,
-            "semester": semester,
-            "year": year,
-            "routine_url": docs["routine"]["url"],
-            "routine_title": docs["routine"]["title"],
-            "seat_plan_found": bool(docs.get("seat_plan")),
-            "seat_plan_url": docs["seat_plan"]["url"] if docs.get("seat_plan") else None,
-            "from_cache": docs.get("from_cache", False),
-            "version": APP_VERSION,
+            "ok": True, 
+            "message": f"Success! Synced {len(target_sections)} sections to Firebase.",
+            "routine_url": current_routine_url
         }
+
     except Exception as exc:
         raise HTTPException(502, f"Refresh failed: {exc}") from exc
-
+    finally:
+        for path in (locals().get('routine_path'), locals().get('seat_path')):
+            if path:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
 @app.get("/api/cache-status")
 def cache_status():
