@@ -17,8 +17,12 @@ from parser import build_student_routine, parse_exam_routine, parse_seat_plan
 for _name in ("pdfminer", "pdfminer.pdfpage", "pdfplumber"):
     logging.getLogger(_name).setLevel(logging.ERROR)
 
-APP_VERSION = "8.0.0"
+APP_VERSION = "8.1.0"
 MAX_FILE_SIZE = 25 * 1024 * 1024
+
+# Optional shared secret for the background refresh endpoint.
+# Set REFRESH_SECRET in Render environment variables.
+REFRESH_SECRET = os.environ.get("REFRESH_SECRET", "").strip()
 
 app = FastAPI(title="Exam Routine Generator API", version=APP_VERSION)
 app.add_middleware(
@@ -29,53 +33,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Small in-memory cache. It mainly prevents a student repeatedly clicking the
-# button from launching several expensive Playwright crawls. Render may clear
-# it when the free instance sleeps/restarts, which is fine.
+# In-memory result cache. Prevents students from launching expensive
+# Playwright crawls. Render free tier clears it on sleep/restart — that is OK
+# because the GitHub Actions refresh job will warm it again.
 _CACHE: dict[tuple, tuple[float, dict]] = {}
 _CACHE_LOCK = Lock()
 _INFLIGHT_LOCK = Lock()
 _INFLIGHT: set[tuple] = set()
-CACHE_SECONDS = 900
-
-
-def ensure_playwright_browser() -> None:
-    """Install Chromium at startup if the Render build skipped it.
-
-    Safe no-op when the browser is already present. Avoids the common
-    production error: BrowserType.launch Executable does not exist.
-    """
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:
-        return
-    try:
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"],
-            )
-            browser.close()
-        return
-    except Exception:
-        pass
-    try:
-        import subprocess
-        import sys
-        subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            check=False,
-            timeout=300,
-        )
-    except Exception:
-        pass
-
-
-@app.on_event("startup")
-def _startup_browser() -> None:
-    ensure_playwright_browser()
-
-
+CACHE_SECONDS = 1800  # 30 minutes — longer because of proactive refresh
 
 
 def _write_temp(raw: bytes, file_type: str) -> str:
@@ -281,3 +246,72 @@ def auto_analyze(
                     pass
         with _INFLIGHT_LOCK:
             _INFLIGHT.discard(key)
+
+
+@app.post("/api/refresh")
+@app.get("/api/refresh")
+def refresh_documents(
+    exam_type: str = Query("final"),
+    semester: str = Query("summer"),
+    year: Optional[int] = Query(None),
+    section: str = Query("65_L"),
+    secret: Optional[str] = Query(None),
+):
+    """Force a fresh discovery of the official routine + seat plan.
+
+    Designed to be called by GitHub Actions (or any free cron) every 20–30 min.
+    This keeps the in-memory document cache warm so students get instant results.
+
+    Protect with REFRESH_SECRET environment variable when deployed.
+    """
+    if REFRESH_SECRET and secret != REFRESH_SECRET:
+        raise HTTPException(403, "Invalid or missing refresh secret.")
+
+    exam_type = exam_type.lower().strip()
+    semester = semester.lower().strip()
+    section = section.strip().upper().replace("-", "_")
+
+    if exam_type not in ("mid", "final"):
+        raise HTTPException(400, "Exam type must be Mid or Final.")
+    if semester not in ("spring", "summer", "fall"):
+        raise HTTPException(400, "Semester must be Spring, Summer, or Fall.")
+
+    try:
+        # Force a live discovery. discover_documents already has its own
+        # document-level cache; calling it here warms that cache for everyone.
+        docs = discover_documents(
+            section=section,
+            exam_type=exam_type,
+            semester=semester,
+            year=year,
+            include_seat_plan=True,
+        )
+        return {
+            "ok": True,
+            "message": "Documents refreshed successfully.",
+            "exam_type": exam_type,
+            "semester": semester,
+            "year": year,
+            "routine_url": docs["routine"]["url"],
+            "routine_title": docs["routine"]["title"],
+            "seat_plan_found": bool(docs.get("seat_plan")),
+            "seat_plan_url": docs["seat_plan"]["url"] if docs.get("seat_plan") else None,
+            "from_cache": docs.get("from_cache", False),
+            "version": APP_VERSION,
+        }
+    except Exception as exc:
+        raise HTTPException(502, f"Refresh failed: {exc}") from exc
+
+
+@app.get("/api/cache-status")
+def cache_status():
+    """Lightweight status for monitoring (used by GitHub Actions / health checks)."""
+    with _CACHE_LOCK:
+        result_count = len(_CACHE)
+    return {
+        "ok": True,
+        "version": APP_VERSION,
+        "result_cache_entries": result_count,
+        "cache_ttl_seconds": CACHE_SECONDS,
+        "noticeboard": NOTICEBOARD_URL,
+    }

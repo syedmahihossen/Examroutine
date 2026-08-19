@@ -49,7 +49,7 @@ NOTICEBOARD_URL = "https://daffodilvarsity.edu.bd/noticeboard"
 MAX_DOCUMENT_BYTES = 30 * 1024 * 1024
 HTTP_TIMEOUT = (8, 20)
 PAGE_TIMEOUT = 22_000
-CANDIDATE_CACHE_SECONDS = 600
+CANDIDATE_CACHE_SECONDS = 900   # 15 min
 SEMESTERS = ("spring", "summer", "fall")
 EXAM_TYPES = ("mid", "final")
 
@@ -57,29 +57,10 @@ EXAM_TYPES = ("mid", "final")
 _CANDIDATE_CACHE: dict[tuple, tuple[float, list]] = {}
 # Document cache: one routine (+ optional seat plan) per exam session is enough
 # for every section. Different sections only need re-matching, not re-download.
+# Longer TTL because GitHub Actions keeps it warm via /api/refresh.
 _DOC_CACHE: dict[tuple, tuple[float, dict]] = {}
-DOC_CACHE_SECONDS = 900
+DOC_CACHE_SECONDS = 1800  # 30 min
 _DOC_INFLIGHT: set[tuple] = set()
-
-
-def _launch_browser(pw):
-    """Launch Chromium headless. Returns None if the browser binary is missing."""
-    try:
-        return pw.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-extensions",
-                "--single-process",
-            ],
-        )
-    except Exception as exc:
-        logging.getLogger(__name__).warning("Playwright Chromium unavailable: %s", exc)
-        return None
-
-
 
 HEADERS = {
     "User-Agent": (
@@ -342,9 +323,10 @@ def collect_notice_candidates(semester: str, year: Optional[int], exam_type: str
         return []
     network = []
     with sync_playwright() as pw:
-        browser = _launch_browser(pw)
-        if browser is None:
-            return []
+        browser = pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-extensions"],
+        )
         context = browser.new_context(
             user_agent=HEADERS["User-Agent"],
             viewport={"width": 1280, "height": 900},
@@ -805,9 +787,7 @@ def _inspect_routine_documents(session, candidates, section, exam_type, semester
 
     # Phase 2: detail pages via Playwright (only top CSE-ish)
     with sync_playwright() as pw:
-        browser = _launch_browser(pw)
-        if browser is None:
-            return best
+        browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
         context = browser.new_context(user_agent=HEADERS["User-Agent"], accept_downloads=True)
         page = context.new_page()
         try:
@@ -1148,9 +1128,10 @@ def _inspect_seat_plan(session, candidates, routine, section, exam_type, semeste
         reverse=True,
     )
     with sync_playwright() as pw:
-        browser = _launch_browser(pw)
-        if browser is None:
-            return None
+        browser = pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+        )
         context = browser.new_context(user_agent=HEADERS["User-Agent"], accept_downloads=True)
         page = context.new_page()
         page.set_default_timeout(10_000)

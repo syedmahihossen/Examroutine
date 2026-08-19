@@ -2,11 +2,11 @@ services:
   - type: web
     name: examroutine-api
     runtime: python
-    buildCommand: bash build.sh
+    buildCommand: pip install -r backend/requirements.txt && python -m playwright install chromium
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
     envVars:
-      - key: PLAYWRIGHT_BROWSERS_PATH
-        value: /opt/render/project/src/.playwright
+      - key: REFRESH_SECRET
+        generateValue: true
       - key: PYTHON_VERSION
-        value: "3.12.0"
+        value: "3.12"

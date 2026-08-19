@@ -1,8 +1,18 @@
+// API base URL resolution order:
+// 1. ?api=... query parameter (useful for testing)
+// 2. window.EXAM_API (set via a small config script if needed)
+// 3. localhost when developing
+// 4. Production Render backend
 const queryApi = new URLSearchParams(location.search).get("api");
-const isLocal = location.protocol === "file:" || location.hostname === "127.0.0.1" || location.hostname === "localhost";
-const API = window.EXAM_API || queryApi || (isLocal
-  ? "http://127.0.0.1:8000"
-  : "https://examroutine.onrender.com");
+const isLocal =
+  location.protocol === "file:" ||
+  location.hostname === "127.0.0.1" ||
+  location.hostname === "localhost";
+
+const API =
+  window.EXAM_API ||
+  queryApi ||
+  (isLocal ? "http://127.0.0.1:8000" : "https://examroutine.onrender.com");
 
 const $ = id => document.getElementById(id);
 let data = null;
