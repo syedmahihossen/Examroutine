@@ -150,6 +150,9 @@ async function autoAnalyze() {
       }
       throw new Error(typeof message === "string" ? message : "Automatic lookup failed.");
     }
+    if (JSON.stringify(body).includes("not found in the seat-plan PDF")) {
+      throw new Error(`Section ${section} is invalid or not found in the official seat plan. Please check your spelling.`);
+    }
 
     data = body;
     renderSource();
