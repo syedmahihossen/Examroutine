@@ -13,7 +13,7 @@ const API =
   window.EXAM_API ||
   queryApi ||
   (isLocal ? "http://127.0.0.1:8000" : "https://examroutine.onrender.com");
-
+const FIREBASE_BASE_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines";
 const $ = id => document.getElementById(id);
 let data = null;
 let busy = false;
