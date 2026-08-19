@@ -316,14 +316,17 @@ def refresh_documents(
         seat_plan_data = parse_seat_plan(seat_path) if seat_path else None
 
         # --- THE MAGIC: DYNAMICALLY FIND EVERY SECTION ---
-        # Convert the entire parsed routine to a string and use Regex to find every 
-        # pattern that looks like a DIU section (e.g., 65_L, 64_M, 66_A)
-        routine_string = str(routine_data)
-        found_sections = set(re.findall(r'\d{2,3}_[A-Z0-9]+', routine_string))
+        # Scan BOTH the routine and the seat plan data for sections
+        combined_data = str(routine_data) + " " + str(seat_plan_data)
         
-        # Convert the set back to a sorted list
+        # Find anything that looks like a section (e.g., 65_L, 65-L)
+        raw_sections = re.findall(r'\d{2,3}[-_][A-Z0-9]+', combined_data)
+        
+        # Normalize everything to use underscores (e.g., forces 65-L to become 65_L)
+        found_sections = {sec.replace('-', '_') for sec in raw_sections}
         target_sections = sorted(list(found_sections))
-        print(f"Discovered {len(target_sections)} unique sections in the routine.")
+        
+        print(f"Discovered {len(target_sections)} unique sections in the documents.")
         # -------------------------------------------------
 
         # 5. Build and push the routine for every single discovered section
