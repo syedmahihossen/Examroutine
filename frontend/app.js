@@ -88,6 +88,40 @@ async function autoAnalyze() {
   const timer = setTimeout(() => controller.abort(), 120000);
 
   try {
+    // --- 1. FIREBASE INSTANT LOAD LOGIC ---
+    try {
+      const fbResponse = await fetch(`${FIREBASE_BASE_URL}/${section}.json`);
+      const fbData = await fbResponse.json();
+
+      if (fbData && fbData.exams && fbData.exams.length > 0) {
+        console.log("Loaded instantly from Firebase!");
+        data = fbData;
+        
+        // Stop the loading text immediately
+        clearInterval(progress);
+
+        renderSource();
+        renderResult();
+        generateRoutine();
+
+        const seatMessage = fbData.seat_plan_available
+          ? `${fbData.matched_seat_count}/${fbData.exam_count} seat allocations matched.`
+          : "No matching seat plan was available, so the routine is shown without room/seat columns.";
+
+        const scope = fbData.seat_plan_available ? fbData.section : `Batch ${fbData.batch}`;
+        
+        status(`Done. Found ${fbData.exam_count} examination(s) for ${scope}. ${seatMessage} (Firebase Cache - Instant)`);
+        
+        clearTimeout(timer);
+        setBusy(false);
+        return; // Exit early! Render stays asleep.
+      }
+    } catch (err) {
+      console.warn("Firebase fetch missed or failed, falling back to Render:", err);
+    }
+    // --------------------------------------
+
+    // --- 2. EXISTING RENDER FALLBACK LOGIC ---
     const q = new URLSearchParams({
       section,
       exam_type: examType,
@@ -123,6 +157,7 @@ async function autoAnalyze() {
     const scope = body.seat_plan_available ? body.section : `Batch ${body.batch}`;
     const cacheHint = body.cached ? " (cached — instant)" : "";
     status(`Done. Found ${body.exam_count} examination(s) for ${scope}. ${seatMessage}${cacheHint}`);
+    
   } catch (e) {
     console.error(e);
     let message;
