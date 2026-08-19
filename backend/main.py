@@ -1,5 +1,6 @@
 from __future__ import annotations
 import requests
+FIREBASE_BASE_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines"
 import os
 import tempfile
 import time
@@ -228,7 +229,13 @@ def auto_analyze(
                 "cached": False,
             }
         )
-
+        try:
+            section_db_url = f"{FIREBASE_BASE_URL}/{section}.json"
+            requests.put(section_db_url, json=result, timeout=5)
+            print(f"Successfully synced section {section} to Firebase!")
+        except Exception as e:
+            print(f"Firebase sync failed for {section}: {e}")
+        
         _cache_put(key, result)
         return result
 
