@@ -1,15 +1,129 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#082c5c"><title>Student Exam Routine</title><link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%23082d62'/%3E%3C!-- PDF Doc --%3E%3Cpath d='M16 26 h22 l8 8 v36 h-30 z' fill='%23ffffff' stroke='%23082d62' stroke-width='2'/%3E%3Cpath d='M38 26 v8 h8' fill='%23cfd9e5'/%3E%3Ctext x='19' y='46' font-family='sans-serif' font-weight='900' font-size='9' fill='%23082d62'%3EPDF%3C/text%3E%3C!-- Data pixels --%3E%3Crect x='48' y='32' width='4' height='4' fill='%23f7c928'/%3E%3Crect x='44' y='40' width='4' height='4' fill='%23082d62'/%3E%3Crect x='50' y='46' width='4' height='4' fill='%23f7c928'/%3E%3Crect x='46' y='52' width='4' height='4' fill='%23082d62'/%3E%3C!-- Calendar --%3E%3Crect x='54' y='28' width='32' height='42' rx='4' fill='%230b2e63'/%3E%3Crect x='58' y='38' width='24' height='28' rx='2' fill='%23ffffff'/%3E%3Crect x='61' y='42' width='4' height='4' fill='%23082d62'/%3E%3Crect x='68' y='42' width='4' height='4' fill='%23082d62'/%3E%3Crect x='75' y='42' width='4' height='4' fill='%23082d62'/%3E%3Crect x='61' y='49' width='4' height='4' fill='%23082d62'/%3E%3Crect x='68' y='49' width='4' height='4' fill='%23082d62'/%3E%3Crect x='75' y='49' width='4' height='4' fill='%23f7c928'/%3E%3Crect x='61' y='56' width='4' height='4' fill='%23082d62'/%3E%3Crect x='68' y='56' width='4' height='4' fill='%23082d62'/%3E%3C!-- Gold Swoop Arrow --%3E%3Cpath d='M14 62 Q 40 76 68 44' fill='none' stroke='%23f7c928' stroke-width='6' stroke-linecap='round'/%3E%3Cpolygon points='66,38 78,43 70,52' fill='%23f7c928'/%3E%3C/svg%3E"><link rel="stylesheet" href="style.css"></head>
-<body><main class="container">
-<header class="hero"><div><div class="eyebrow">STUDENT EXAM ROUTINE</div><h1>Build Your Exam Routine</h1><p>Automatically find the latest CSE Mid or Final examination routine from the DIU Notice Board and match your section with the seat plan.</p></div><div class="hero-mark" aria-hidden="true">PDF<br><span>→</span><br>DATA</div></header>
-<section class="card auto-card"><div class="auto-head"><div><div class="eyebrow dark">AUTOMATIC MODE</div><h2>Get your latest routine</h2><p>Choose your section, semester, year and exam type. The system finds the official notice, downloads the routine and seat plan, and matches your rooms automatically.</p></div><div class="live-badge"><span></span> DIU Notice Board</div></div>
-<div class="auto-form">
-<div class="field"><label for="section">Your section</label><input id="section" autocomplete="off" placeholder="Example: 65_L" value="65_L"><small>Use your exact section.</small></div>
-<div class="field"><label for="semester">Semester</label><select id="semester"><option value="spring">Spring</option><option value="summer" selected>Summer</option><option value="fall">Fall</option></select><small>Academic semester.</small></div>
-<div class="field"><label for="academicYear">Year</label><input id="academicYear" type="number" min="2020" max="2100" value="2026"><small>Academic year.</small></div>
-<div class="field"><label for="examType">Exam type</label><select id="examType"><option value="final" selected>Final</option><option value="mid">Mid</option></select><small>Only Mid and Final.</small></div>
-<button id="autoAnalyze" class="primary auto-button">↻ Get My Latest Routine</button></div>
-<div id="status" class="status hidden" role="status" aria-live="polite"></div><div id="sourceInfo" class="source-info hidden"></div></section>
-<section id="result" class="card hidden"><div class="result-head"><div><div class="eyebrow dark">VERIFICATION</div><h2 id="resultTitle">Your exams</h2></div><span id="match" class="pill"></span></div><div id="warnings"></div><div id="exams"></div></section>
-<section id="preview" class="card hidden"><div class="result-head preview-toolbar"><div><div class="eyebrow dark">FINAL ROUTINE</div><h2>Ready to use</h2></div><div class="actions top"><button id="png" class="secondary">↓ Download PNG</button><button id="pdf" class="secondary">↓ Download PDF</button></div></div><div id="routineOutput"></div><div class="mobile-downloads"><button id="pngMobile" class="secondary">↓ Download PNG</button><button id="pdfMobile" class="secondary">↓ Download PDF</button></div></section>
-</main><div id="exportStage" aria-hidden="true"></div><script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script><script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script><script src="app.js"></script></body></html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#082c5c">
+  <meta name="description" content="Build your personalized DIU CSE exam routine with automatic seat plan matching from the official notice board.">
+  <title>Student Exam Routine · DIU CSE</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%23082d62'/%3E%3Cpath d='M16 26 h22 l8 8 v36 h-30 z' fill='%23ffffff' stroke='%23082d62' stroke-width='2'/%3E%3Cpath d='M38 26 v8 h8' fill='%23cfd9e5'/%3E%3Ctext x='19' y='46' font-family='sans-serif' font-weight='900' font-size='9' fill='%23082d62'%3EPDF%3C/text%3E%3Crect x='48' y='32' width='4' height='4' fill='%23f7c928'/%3E%3Crect x='44' y='40' width='4' height='4' fill='%23082d62'/%3E%3Crect x='50' y='46' width='4' height='4' fill='%23f7c928'/%3E%3Crect x='46' y='52' width='4' height='4' fill='%23082d62'/%3E%3Crect x='54' y='28' width='32' height='42' rx='4' fill='%230b2e63'/%3E%3Crect x='58' y='38' width='24' height='28' rx='2' fill='%23ffffff'/%3E%3Crect x='61' y='42' width='4' height='4' fill='%23082d62'/%3E%3Crect x='68' y='42' width='4' height='4' fill='%23082d62'/%3E%3Crect x='75' y='42' width='4' height='4' fill='%23082d62'/%3E%3Crect x='61' y='49' width='4' height='4' fill='%23082d62'/%3E%3Crect x='68' y='49' width='4' height='4' fill='%23082d62'/%3E%3Crect x='75' y='49' width='4' height='4' fill='%23f7c928'/%3E%3Crect x='61' y='56' width='4' height='4' fill='%23082d62'/%3E%3Crect x='68' y='56' width='4' height='4' fill='%23082d62'/%3E%3Cpath d='M14 62 Q 40 76 68 44' fill='none' stroke='%23f7c928' stroke-width='6' stroke-linecap='round'/%3E%3Cpolygon points='66,38 78,43 70,52' fill='%23f7c928'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="container">
+    <header class="hero">
+      <div>
+        <div class="eyebrow">STUDENT EXAM ROUTINE</div>
+        <h1>Build Your Exam Routine</h1>
+        <p>Automatically find the latest CSE Mid or Final examination routine from the DIU Notice Board and match your section with the seat plan.</p>
+      </div>
+      <div class="hero-actions">
+        <button type="button" id="themeToggle" class="theme-toggle" aria-label="Toggle dark mode" title="Toggle dark mode">
+          <span class="theme-icon-light" aria-hidden="true">☀</span>
+          <span class="theme-icon-dark" aria-hidden="true">☾</span>
+        </button>
+        <div class="hero-mark" aria-hidden="true">PDF<br><span>→</span><br>DATA</div>
+      </div>
+    </header>
+
+    <section class="card auto-card">
+      <div class="auto-head">
+        <div>
+          <div class="eyebrow dark">AUTOMATIC MODE</div>
+          <h2>Get your latest routine</h2>
+          <p>Choose your section, semester, year and exam type. The system finds the official notice, downloads the routine and seat plan, and matches your rooms automatically.</p>
+        </div>
+        <div class="live-badge"><span></span> DIU Notice Board</div>
+      </div>
+
+      <form id="routineForm" class="auto-form" autocomplete="off">
+        <div class="field">
+          <label for="section">Your section</label>
+          <input id="section" name="section" autocomplete="off" placeholder="Example: 65_L" inputmode="text" spellcheck="false">
+          <small>Use your exact section (e.g. 65_L).</small>
+        </div>
+        <div class="field">
+          <label for="semester">Semester</label>
+          <select id="semester" name="semester">
+            <option value="spring">Spring</option>
+            <option value="summer" selected>Summer</option>
+            <option value="fall">Fall</option>
+          </select>
+          <small>Academic semester.</small>
+        </div>
+        <div class="field">
+          <label for="academicYear">Year</label>
+          <select id="academicYear" name="academicYear">
+            <option value="2025">2025</option>
+            <option value="2026" selected>2026</option>
+            <option value="2027">2027</option>
+          </select>
+          <small>Academic year.</small>
+        </div>
+        <div class="field">
+          <label for="examType">Exam type</label>
+          <select id="examType" name="examType">
+            <option value="final" selected>Final</option>
+            <option value="mid">Mid</option>
+          </select>
+          <small>Only Mid and Final.</small>
+        </div>
+        <div class="auto-button-wrap">
+          <button type="submit" id="autoAnalyze" class="primary auto-button">↻ Get My Latest Routine</button>
+        </div>
+      </form>
+
+      <div id="status" class="status hidden" role="status" aria-live="polite"></div>
+      <div id="sourceInfo" class="source-info hidden"></div>
+    </section>
+
+    <section id="result" class="card hidden">
+      <div class="result-head">
+        <div>
+          <div class="eyebrow dark">VERIFICATION</div>
+          <h2 id="resultTitle">Your exams</h2>
+        </div>
+        <div class="result-actions">
+          <span id="match" class="pill"></span>
+          <button type="button" id="toggleDetails" class="ghost-btn" aria-expanded="false">Show details</button>
+        </div>
+      </div>
+      <div id="warnings"></div>
+      <div id="exams" class="exams-panel collapsed" hidden></div>
+    </section>
+
+    <section id="preview" class="card hidden">
+      <div class="result-head preview-toolbar">
+        <div>
+          <div class="eyebrow dark">FINAL ROUTINE</div>
+          <h2>Ready to use</h2>
+        </div>
+        <div class="actions top">
+          <button type="button" id="png" class="secondary">↓ Download PNG</button>
+          <button type="button" id="pdf" class="secondary">↓ Download PDF</button>
+        </div>
+      </div>
+      <div id="routineOutput"></div>
+      <div class="mobile-downloads">
+        <button type="button" id="pngMobile" class="secondary">↓ Download PNG</button>
+        <button type="button" id="pdfMobile" class="secondary">↓ Download PDF</button>
+      </div>
+    </section>
+
+    <footer class="site-footer">
+      <p><strong>Not an official DIU tool.</strong> Schedules are generated from the public Notice Board and may lag behind the latest notice. Always double-check against the official PDF.</p>
+      <p class="footer-meta">
+        <a href="https://daffodilvarsity.edu.bd/noticeboard" target="_blank" rel="noopener">DIU Notice Board ↗</a>
+        <span>·</span>
+        Made for DIU CSE students
+      </p>
+    </footer>
+  </main>
+
+  <div id="exportStage" aria-hidden="true"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" defer></script>
+  <script src="app.js" defer></script>
+</body>
+</html>
