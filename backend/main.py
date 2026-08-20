@@ -2,7 +2,30 @@ from __future__ import annotations
 import requests
 import re
 FIREBASE_BASE_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines"
+FIREBASE_V2_BASE = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines_v2"
 FIREBASE_SECRET = "TLC3hRT91gy6h78O2EwQ2NLxbNwRTTM4IWrlzd5C"
+
+def firebase_section_paths(section: str, exam_type: str, semester: str, year) -> list[str]:
+    """Write legacy flat key + structured key under routines_v2.
+
+    Important: do NOT write nested paths under /routines/{section}/...
+    because that would replace the legacy object at /routines/{section}.
+    """
+    section = section.strip().upper().replace("-", "_")
+    exam_type = (exam_type or "final").lower().strip()
+    semester = (semester or "summer").lower().strip()
+    year_s = str(year or "")
+    # legacy: /routines/65_K.json
+    paths = [f"{FIREBASE_BASE_URL.rstrip('/')}/{section}.json"]
+    # structured: /routines_v2/65_K/final/summer/2026.json
+    # (separate root so we never nest under the legacy object)
+    if not year_s:
+        year_s = "2026"
+    paths.append(
+        f"{FIREBASE_V2_BASE.rstrip('/')}/{section}/{exam_type}/{semester}/{year_s}.json"
+    )
+    return paths
+
 import os
 import tempfile
 import time
@@ -232,9 +255,15 @@ def auto_analyze(
             }
         )
         try:
-            section_db_url = f"{FIREBASE_BASE_URL}/{section}.json"
-            requests.put(section_db_url, json=result, timeout=5)
-            print(f"Successfully synced section {section} to Firebase!")
+            for section_db_url in firebase_section_paths(
+                section, exam_type, semester, result.get("year") or year
+            ):
+                url = section_db_url
+                if FIREBASE_SECRET:
+                    sep = "&" if "?" in url else "?"
+                    url = f"{url}{sep}auth={FIREBASE_SECRET}"
+                requests.put(url, json=result, timeout=5)
+            print(f"Successfully synced section {section} to Firebase (legacy + structured)!")
         except Exception as e:
             print(f"Firebase sync failed for {section}: {e}")
         
@@ -354,9 +383,15 @@ def refresh_documents(secret: Optional[str] = Query(None)):
                     "cached": True, 
                 })
                 
-                section_db_url = f"{FIREBASE_BASE_URL}/{sec}.json?auth={FIREBASE_SECRET}"
-                requests.put(section_db_url, json=result, timeout=5)
-                print(f"Background Sync: Updated {sec}")
+                for section_db_url in firebase_section_paths(
+                    sec, exam_type, semester, result.get("year") or year
+                ):
+                    url = section_db_url
+                    if FIREBASE_SECRET:
+                        sep = "&" if "?" in url else "?"
+                        url = f"{url}{sep}auth={FIREBASE_SECRET}"
+                    requests.put(url, json=result, timeout=5)
+                print(f"Background Sync: Updated {sec} (legacy + structured)")
 
         # 6. Update our bookmark in Firebase
         new_metadata = {
