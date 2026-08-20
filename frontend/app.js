@@ -401,10 +401,55 @@ function generateRoutine() {
   const identity = hasSeats ? escapeHtml(data.section) : `BATCH ${escapeHtml(batch)}`;
   const examType = String(data.exam_type || "final").toUpperCase();
   const title = `${examType} EXAMINATION ROUTINE`;
+  const nextIdx = findNextExamIndex(exams);
 
-  $("routineOutput").innerHTML = buildRoutine(exams, session, hasSeats, identity, title, batch);
+  $("routineOutput").innerHTML = buildRoutine(exams, session, hasSeats, identity, title, batch, nextIdx);
   $("exportStage").innerHTML = buildExport(exams, session, hasSeats, identity, title, batch);
   $("preview").classList.remove("hidden");
+}
+
+function findNextExamIndex(exams) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  for (let i = 0; i < exams.length; i++) {
+    const d = parseExamDate(exams[i].date);
+    if (d && d >= today) return i;
+  }
+  return -1;
+}
+
+function parseExamDate(value) {
+  if (!value) return null;
+  const d = new Date(`${value}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function daysUntil(value) {
+  const d = parseExamDate(value);
+  if (!d) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.round((d - today) / 86400000);
+}
+
+function relativeLabel(value) {
+  const n = daysUntil(value);
+  if (n === null) return "";
+  if (n < 0) return "Done";
+  if (n === 0) return "Today";
+  if (n === 1) return "Tomorrow";
+  return `In ${n} days`;
+}
+
+function formatDateParts(value) {
+  if (!value) return { day: "—", month: "", year: "" };
+  const d = parseExamDate(value);
+  if (!d) return { day: escapeHtml(value), month: "", year: "" };
+  return {
+    day: String(d.getDate()).padStart(2, "0"),
+    month: d.toLocaleDateString("en-GB", { month: "short" }),
+    year: String(d.getFullYear())
+  };
 }
 
 function calendarIcon() {
@@ -415,26 +460,63 @@ function calendarIcon() {
   </svg>`;
 }
 
-function buildMobileCards(exams, hasSeats) {
+function buildNextBanner(exams, nextIdx) {
+  if (nextIdx < 0) {
+    return `<div class="next-banner next-done">All listed examinations are in the past.</div>`;
+  }
+  const x = exams[nextIdx];
+  const rel = relativeLabel(x.date);
+  const rooms = x.rooms?.length
+    ? x.rooms.map((r) => `R${escapeHtml(r.room)}`).join(", ")
+    : "";
+  return `
+    <div class="next-banner">
+      <div class="next-left">
+        <span class="next-tag">${escapeHtml(rel)}</span>
+        <div>
+          <strong>Next: ${escapeHtml(x.course_code)}</strong>
+          <span class="next-sub">${escapeHtml(x.course_name)}</span>
+        </div>
+      </div>
+      <div class="next-right">
+        <span>${formatDate(x.date)} · ${escapeHtml(x.day)}</span>
+        <span>${escapeHtml(x.time || "—")}${rooms ? ` · ${rooms}` : ""}</span>
+      </div>
+    </div>`;
+}
+
+function buildMobileCards(exams, hasSeats, nextIdx) {
   return exams
-    .map((x) => {
+    .map((x, i) => {
       const rooms = x.rooms?.length
-        ? x.rooms.map((r) => `Room ${escapeHtml(r.room)} (${Number(r.seats) || 0})`).join(", ")
+        ? x.rooms
+            .map(
+              (r) =>
+                `<span class="room-chip">R${escapeHtml(r.room)} <em>${Number(r.seats) || 0}</em></span>`
+            )
+            .join("")
         : "—";
       const total = getExamTotal(x);
+      const rel = relativeLabel(x.date);
+      const isNext = i === nextIdx;
+      const isPast = (daysUntil(x.date) ?? 0) < 0;
       return `
-      <article class="mobile-exam">
+      <article class="mobile-exam ${isNext ? "is-next" : ""} ${isPast ? "is-past" : ""}">
         <div class="me-top">
           <div class="me-date">${formatDate(x.date)}</div>
-          <div class="me-day">${escapeHtml(x.day)}</div>
+          <div class="me-badges">
+            ${isNext ? `<span class="badge-next">Next</span>` : ""}
+            ${rel ? `<span class="badge-rel">${escapeHtml(rel)}</span>` : ""}
+            <span class="me-day">${escapeHtml(x.day)}</span>
+          </div>
         </div>
-        <div class="me-course">${escapeHtml(x.course_code)}</div>
+        <div class="me-course"><span class="code-pill">${escapeHtml(x.course_code)}</span></div>
         <div class="me-name">${escapeHtml(x.course_name)}</div>
         <div class="me-meta">
           <div><span>TIME</span><strong>${escapeHtml(x.time || "—")}</strong></div>
           ${
             hasSeats
-              ? `<div><span>ROOMS</span><strong>${rooms}</strong></div>
+              ? `<div><span>ROOMS</span><div class="chip-row">${rooms}</div></div>
                  <div><span>TOTAL</span><strong>${total}</strong></div>`
               : ""
           }
@@ -444,9 +526,9 @@ function buildMobileCards(exams, hasSeats) {
     .join("");
 }
 
-function buildRoutine(exams, session, hasSeats, identity, title, batch) {
+function buildRoutine(exams, session, hasSeats, identity, title, batch, nextIdx) {
   const seatHeaders = hasSeats
-    ? `<th>ROOM</th><th>SEATS / ROOM</th><th>TOTAL</th>`
+    ? `<th>ROOM</th><th>SEATS</th><th>TOTAL</th>`
     : "";
 
   return `
@@ -455,6 +537,8 @@ function buildRoutine(exams, session, hasSeats, identity, title, batch) {
         <div class="export-title"><span>${identity}</span> ${escapeHtml(title)}</div>
         <div class="session-line"><i></i><strong>${escapeHtml(session.replace("-", "–"))}</strong><i></i></div>
       </div>
+
+      ${buildNextBanner(exams, nextIdx)}
 
       <div class="meta routine-meta">
         ${
@@ -471,16 +555,16 @@ function buildRoutine(exams, session, hasSeats, identity, title, batch) {
           <thead><tr>
             <th>DATE</th><th>DAY</th><th>COURSE</th><th>TIME</th>${seatHeaders}
           </tr></thead>
-          <tbody>${exams.map((x, i) => screenRow(x, i, hasSeats)).join("")}</tbody>
+          <tbody>${exams.map((x, i) => screenRow(x, i, hasSeats, nextIdx)).join("")}</tbody>
         </table>
       </div>
 
       <div class="mobile-exam-list">
-        ${buildMobileCards(exams, hasSeats)}
+        ${buildMobileCards(exams, hasSeats, nextIdx)}
       </div>
 
       <div class="note">
-        <b>NOTE:</b> This schedule is based on the official routine published by the Examination Committee, FSIT.
+        <b>NOTE:</b> This schedule is based on the official routine published by the Examination Committee, FSIT. Always verify against the official PDF.
       </div>
     </div>
   `;
@@ -528,24 +612,45 @@ function buildExport(exams, session, hasSeats, identity, title, batch) {
   `;
 }
 
-function screenRow(x, i, hasSeats) {
-  const seats = x.rooms?.length
-    ? x.rooms.map((r) => `<div>${escapeHtml(r.room)}</div>`).join("")
+function screenRow(x, i, hasSeats, nextIdx) {
+  const parts = formatDateParts(x.date);
+  const isNext = i === nextIdx;
+  const isPast = (daysUntil(x.date) ?? 0) < 0;
+  const rel = relativeLabel(x.date);
+
+  const rooms = x.rooms?.length
+    ? x.rooms.map((r) => `<div class="room-no">${escapeHtml(r.room)}</div>`).join("")
     : "—";
-  const seatCounts = x.rooms?.length
-    ? x.rooms.map((r) => `<div>${Number(r.seats) || 0}</div>`).join("")
+  const seats = x.rooms?.length
+    ? x.rooms.map((r) => `<div class="seat-no">${Number(r.seats) || 0}</div>`).join("")
     : "—";
   const total = getExamTotal(x);
 
   return `
-    <tr class="screen-row-${i % 4}">
-      <td class="date-cell"><span class="date-icon">${calendarIcon()}</span><strong>${formatDate(x.date)}</strong></td>
-      <td class="center">${escapeHtml(x.day)}</td>
-      <td class="course-cell"><b>${escapeHtml(x.course_code)}</b><span class="course-name"> — ${escapeHtml(x.course_name)}</span></td>
+    <tr class="screen-row-${i % 4} ${isNext ? "row-next" : ""} ${isPast ? "row-past" : ""}">
+      <td class="date-cell">
+        <div class="date-stack">
+          <div class="date-main">
+            <span class="date-icon">${calendarIcon()}</span>
+            <div class="date-text">
+              <strong>${parts.day} ${parts.month}</strong>
+              <span class="date-year">${parts.year}</span>
+            </div>
+          </div>
+          ${rel ? `<span class="date-rel ${isNext ? "is-next" : ""} ${isPast ? "is-past" : ""}">${escapeHtml(rel)}</span>` : ""}
+        </div>
+      </td>
+      <td class="center day-cell">${escapeHtml(x.day)}</td>
+      <td class="course-cell">
+        <span class="code-pill">${escapeHtml(x.course_code)}</span>
+        <span class="course-name">${escapeHtml(x.course_name)}</span>
+      </td>
       <td class="center time-cell">${escapeHtml(x.time || "—")}</td>
       ${
         hasSeats
-          ? `<td class="rooms-cell">${seats}</td><td class="center seats-cell">${seatCounts}</td><td class="center total-cell"><strong>${total}</strong></td>`
+          ? `<td class="rooms-cell">${rooms}</td>
+             <td class="center seats-cell">${seats}</td>
+             <td class="center total-cell"><strong>${total}</strong></td>`
           : ""
       }
     </tr>
