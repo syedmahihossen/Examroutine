@@ -26,7 +26,7 @@ from parser import build_student_routine, parse_exam_routine, parse_seat_plan
 for _name in ("pdfminer", "pdfminer.pdfpage", "pdfplumber"):
     logging.getLogger(_name).setLevel(logging.ERROR)
 
-APP_VERSION = "8.2.0"
+APP_VERSION = "8.2.1"
 
 FIREBASE_BASE_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines"
 FIREBASE_V2_BASE = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines_v2"
@@ -42,11 +42,6 @@ REFRESH_SECRET = os.environ.get("REFRESH_SECRET", "").strip()
 # If fewer sections than this exist in Firebase, refresh auto-forces a full rebuild
 MIN_HEALTHY_SECTION_COUNT = 30
 
-# Reject clearly fake / typo sections from being cached (e.g. 65_Z from bad searches)
-# Real DIU sections use letters A–Z but Z alone as a single-letter section is rare;
-# we still allow any A-Z pattern that appears in the official PDF. The guard below
-# only blocks writes when the section was NOT discovered from the PDF (auto-analyze
-# of a typo that still returned batch rows).
 SECTION_RE = re.compile(r"^\d{2,3}_[A-Z0-9]+$")
 
 app = FastAPI(title="Exam Routine Generator API", version=APP_VERSION)
@@ -106,7 +101,6 @@ def write_section_cache(
     semester: str,
     year,
 ) -> None:
-    """Upsert one section. Never deletes other sections. Never nests under legacy key."""
     section = section.strip().upper().replace("-", "_")
     exam_type = (exam_type or "final").lower().strip()
     semester = (semester or "summer").lower().strip()
@@ -182,7 +176,6 @@ def _cache_put(key, value):
 
 
 def detect_term():
-    """Best-effort semester/exam/year from the notice board HTML."""
     try:
         resp = requests.get(NOTICEBOARD_URL, timeout=10)
         match = re.search(r">([^<]*CSE[^<]*Routine[^<]*)<", resp.text, re.IGNORECASE)
@@ -322,41 +315,6 @@ def auto_analyze(
                 f"No examinations were found for batch {result['batch']} in the selected routine."
             )
 
-        # Do not cache typo sections that only got generic batch rows with zero seat matches
-        # unless the section string appears in the official documents.
-        combined = str(routine) + " " + str(seat_plan)
-        section_in_docs = bool(re.search(re.escape(section).replace("_", "[-_]"), combined, re.I))
-        if (not section_in_docs) and result.get("matched_seat_count", 0) == 0:
-            # Still return data to the student, but do NOT pollute Firebase
-            result.update(
-                {
-                    "exam_type": exam_type,
-                    "semester": result.get("semester") or semester.title(),
-                    "year": result.get("year") or year,
-                    "seat_plan_found": bool(seat_path),
-                    "seat_plan_available": False,
-                    "source": {
-                        "automatic": True,
-                        "noticeboard": NOTICEBOARD_URL,
-                        "routine_url": docs["routine"]["url"],
-                        "routine_title": docs["routine"]["title"],
-                        "routine_file_type": docs["routine"]["file_type"],
-                        "seat_plan_url": docs["seat_plan"]["url"] if docs.get("seat_plan") else None,
-                        "seat_plan_title": docs["seat_plan"]["title"] if docs.get("seat_plan") else None,
-                        "seat_plan_file_type": docs["seat_plan"]["file_type"]
-                        if docs.get("seat_plan")
-                        else None,
-                    },
-                    "cached": False,
-                    "warnings": list(result.get("warnings") or [])
-                    + [
-                        f"Section {section} was not found in the official documents; result not saved to cache."
-                    ],
-                }
-            )
-            _cache_put(key, result)
-            return result
-
         if seat_plan and result["matched_seat_count"] < result["exam_count"]:
             result["warnings"].append(
                 f"Seat allocation matched {result['matched_seat_count']} of {result['exam_count']} examinations."
@@ -390,10 +348,8 @@ def auto_analyze(
             }
         )
 
-        # Upsert this section only — never replaces the whole /routines tree
         try:
             write_section_cache(section, result, exam_type, semester, result_year)
-            # Keep metadata PDF links fresh when students hit live lookup
             write_metadata(
                 docs["routine"]["url"],
                 docs["seat_plan"]["url"] if docs.get("seat_plan") else None,
@@ -432,14 +388,6 @@ def refresh_documents(
         description="Rebuild all sections even if routine PDF URL is unchanged.",
     ),
 ):
-    """Rebuild Firebase cache for every section found in the official PDFs.
-
-    Strategy:
-    - If force=true → always rebuild
-    - If cached section count < MIN_HEALTHY_SECTION_COUNT → auto-force (self-heal)
-    - Else if PDF URL unchanged → skip (save Render minutes)
-    - Writes are per-section upserts only (never delete the whole tree)
-    """
     if REFRESH_SECRET and secret != REFRESH_SECRET:
         raise HTTPException(403, "Invalid or missing refresh secret.")
 
