@@ -1,31 +1,15 @@
 from __future__ import annotations
+"""
+ExamRoutine backend — stable strategy
+
+1. PRIMARY cache:  /routines/{SECTION}.json     (flat, proven, frontend reads this)
+2. OPTIONAL v2:    /routines_v2/{SECTION}/{exam}/{semester}/{year}.json
+3. METADATA:       /metadata.json  (routine_url, seat_plan_url, section_count)
+4. REFRESH:        rebuilds ALL sections; auto-forces if cache looks empty/thin
+5. AUTO-ANALYZE:   serves one student; upserts only that section (never deletes others)
+"""
 import requests
 import re
-FIREBASE_BASE_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines"
-FIREBASE_V2_BASE = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines_v2"
-FIREBASE_SECRET = "TLC3hRT91gy6h78O2EwQ2NLxbNwRTTM4IWrlzd5C"
-
-def firebase_section_paths(section: str, exam_type: str, semester: str, year) -> list[str]:
-    """Write legacy flat key + structured key under routines_v2.
-
-    Important: do NOT write nested paths under /routines/{section}/...
-    because that would replace the legacy object at /routines/{section}.
-    """
-    section = section.strip().upper().replace("-", "_")
-    exam_type = (exam_type or "final").lower().strip()
-    semester = (semester or "summer").lower().strip()
-    year_s = str(year or "")
-    # legacy: /routines/65_K.json
-    paths = [f"{FIREBASE_BASE_URL.rstrip('/')}/{section}.json"]
-    # structured: /routines_v2/65_K/final/summer/2026.json
-    # (separate root so we never nest under the legacy object)
-    if not year_s:
-        year_s = "2026"
-    paths.append(
-        f"{FIREBASE_V2_BASE.rstrip('/')}/{section}/{exam_type}/{semester}/{year_s}.json"
-    )
-    return paths
-
 import os
 import tempfile
 import time
@@ -39,16 +23,31 @@ from fastapi.middleware.cors import CORSMiddleware
 from noticeboard import NOTICEBOARD_URL, collect_notice_candidates, discover_documents
 from parser import build_student_routine, parse_exam_routine, parse_seat_plan
 
-# Keep third-party PDF warnings out of production logs.
 for _name in ("pdfminer", "pdfminer.pdfpage", "pdfplumber"):
     logging.getLogger(_name).setLevel(logging.ERROR)
 
-APP_VERSION = "8.1.0"
-MAX_FILE_SIZE = 25 * 1024 * 1024
+APP_VERSION = "8.2.0"
 
-# Optional shared secret for the background refresh endpoint.
-# Set REFRESH_SECRET in Render environment variables.
+FIREBASE_BASE_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines"
+FIREBASE_V2_BASE = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines_v2"
+FIREBASE_META_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/metadata.json"
+FIREBASE_SHALLOW_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines.json?shallow=true"
+FIREBASE_SECRET = os.environ.get(
+    "FIREBASE_SECRET", "TLC3hRT91gy6h78O2EwQ2NLxbNwRTTM4IWrlzd5C"
+).strip()
+
+MAX_FILE_SIZE = 25 * 1024 * 1024
 REFRESH_SECRET = os.environ.get("REFRESH_SECRET", "").strip()
+
+# If fewer sections than this exist in Firebase, refresh auto-forces a full rebuild
+MIN_HEALTHY_SECTION_COUNT = 30
+
+# Reject clearly fake / typo sections from being cached (e.g. 65_Z from bad searches)
+# Real DIU sections use letters A–Z but Z alone as a single-letter section is rare;
+# we still allow any A-Z pattern that appears in the official PDF. The guard below
+# only blocks writes when the section was NOT discovered from the PDF (auto-analyze
+# of a typo that still returned batch rows).
+SECTION_RE = re.compile(r"^\d{2,3}_[A-Z0-9]+$")
 
 app = FastAPI(title="Exam Routine Generator API", version=APP_VERSION)
 app.add_middleware(
@@ -59,14 +58,87 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory result cache. Prevents students from launching expensive
-# Playwright crawls. Render free tier clears it on sleep/restart — that is OK
-# because the GitHub Actions refresh job will warm it again.
 _CACHE: dict[tuple, tuple[float, dict]] = {}
 _CACHE_LOCK = Lock()
 _INFLIGHT_LOCK = Lock()
 _INFLIGHT: set[tuple] = set()
-CACHE_SECONDS = 1800  # 30 minutes — longer because of proactive refresh
+CACHE_SECONDS = 1800
+
+
+def _auth_url(url: str) -> str:
+    if not FIREBASE_SECRET:
+        return url
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}auth={FIREBASE_SECRET}"
+
+
+def firebase_get(url: str, timeout: int = 8):
+    try:
+        r = requests.get(_auth_url(url) if "auth=" not in url else url, timeout=timeout)
+        if not r.ok:
+            return None
+        data = r.json()
+        return data
+    except Exception:
+        return None
+
+
+def firebase_put(url: str, payload: dict, timeout: int = 10) -> bool:
+    try:
+        r = requests.put(_auth_url(url), json=payload, timeout=timeout)
+        return r.ok
+    except Exception as e:
+        print(f"Firebase PUT failed {url}: {e}")
+        return False
+
+
+def count_cached_sections() -> int:
+    data = firebase_get(FIREBASE_SHALLOW_URL)
+    if not isinstance(data, dict):
+        return 0
+    return sum(1 for k in data if SECTION_RE.match(str(k).upper()))
+
+
+def write_section_cache(
+    section: str,
+    result: dict,
+    exam_type: str,
+    semester: str,
+    year,
+) -> None:
+    """Upsert one section. Never deletes other sections. Never nests under legacy key."""
+    section = section.strip().upper().replace("-", "_")
+    exam_type = (exam_type or "final").lower().strip()
+    semester = (semester or "summer").lower().strip()
+    year_s = str(year or result.get("year") or 2026)
+
+    legacy_url = f"{FIREBASE_BASE_URL.rstrip('/')}/{section}.json"
+    v2_url = f"{FIREBASE_V2_BASE.rstrip('/')}/{section}/{exam_type}/{semester}/{year_s}.json"
+
+    ok1 = firebase_put(legacy_url, result)
+    ok2 = firebase_put(v2_url, result)
+    print(f"Firebase upsert {section}: legacy={'ok' if ok1 else 'fail'} v2={'ok' if ok2 else 'fail'}")
+
+
+def write_metadata(
+    routine_url: Optional[str],
+    seat_plan_url: Optional[str],
+    exam_type: str = "",
+    semester: str = "",
+    year=None,
+    section_count: Optional[int] = None,
+) -> None:
+    payload = {
+        "routine_url": routine_url or "",
+        "seat_plan_url": seat_plan_url or "",
+        "exam_type": exam_type or "",
+        "semester": semester or "",
+        "year": year or "",
+        "updated_at": int(time.time()),
+    }
+    if section_count is not None:
+        payload["section_count"] = section_count
+    firebase_put(FIREBASE_META_URL, payload)
 
 
 def _write_temp(raw: bytes, file_type: str) -> str:
@@ -85,7 +157,7 @@ def _write_temp(raw: bytes, file_type: str) -> str:
     return path
 
 
-def _cache_key(section: str, exam_type: str, semester: str, year: Optional[int], include_seat_plan: bool):
+def _cache_key(section, exam_type, semester, year, include_seat_plan):
     return (section, exam_type, semester, year, bool(include_seat_plan))
 
 
@@ -109,6 +181,28 @@ def _cache_put(key, value):
         _CACHE[key] = (time.monotonic(), value)
 
 
+def detect_term():
+    """Best-effort semester/exam/year from the notice board HTML."""
+    try:
+        resp = requests.get(NOTICEBOARD_URL, timeout=10)
+        match = re.search(r">([^<]*CSE[^<]*Routine[^<]*)<", resp.text, re.IGNORECASE)
+        if match:
+            title = match.group(1).lower()
+            exam_type = "mid" if "mid" in title else "final"
+            if "spring" in title:
+                semester = "spring"
+            elif "fall" in title:
+                semester = "fall"
+            else:
+                semester = "summer"
+            year_match = re.search(r"\b(20\d{2})\b", title)
+            year = int(year_match.group(1)) if year_match else 2026
+            return exam_type, semester, year
+    except Exception as e:
+        print(f"detect_term failed: {e}")
+    return "final", "summer", 2026
+
+
 @app.get("/api/health")
 def health():
     return {
@@ -118,6 +212,7 @@ def health():
         "supported_exam_types": ["mid", "final"],
         "supported_semesters": ["spring", "summer", "fall"],
         "automatic_only": True,
+        "strategy": "legacy-primary + optional-v2 + self-heal-refresh",
     }
 
 
@@ -127,11 +222,6 @@ def discovery_debug(
     semester: str = Query(...),
     year: Optional[int] = Query(None),
 ):
-    """Lightweight diagnostics: shows what the DIU Notice Board collector sees.
-
-    This does not download or parse exam PDFs, so it is safe to use when
-    troubleshooting the automatic discovery layer.
-    """
     exam_type = exam_type.lower().strip()
     semester = semester.lower().strip()
     if exam_type not in ("mid", "final"):
@@ -144,7 +234,12 @@ def discovery_debug(
             "ok": True,
             "count": len(items),
             "candidates": [
-                {"title": x.get("title"), "url": x.get("url"), "score": x.get("score_hint", 0), "context": x.get("context", "")[:500]}
+                {
+                    "title": x.get("title"),
+                    "url": x.get("url"),
+                    "score": x.get("score_hint", 0),
+                    "context": x.get("context", "")[:500],
+                }
                 for x in items[:20]
             ],
         }
@@ -164,8 +259,8 @@ def auto_analyze(
     exam_type = exam_type.lower().strip()
     semester = semester.lower().strip()
 
-    if not section:
-        raise HTTPException(400, "Section is required.")
+    if not SECTION_RE.match(section):
+        raise HTTPException(400, "Enter a valid section such as 65_L or 65_N.")
     if exam_type not in ("mid", "final"):
         raise HTTPException(400, "Exam type must be Mid or Final.")
     if semester not in ("spring", "summer", "fall"):
@@ -178,8 +273,6 @@ def auto_analyze(
     if cached is not None:
         return {**cached, "cached": True}
 
-    # Prevent two students from launching identical Playwright crawls at once.
-    # The second request waits briefly for the first request to populate cache.
     with _INFLIGHT_LOCK:
         if key in _INFLIGHT:
             for _ in range(90):
@@ -187,7 +280,9 @@ def auto_analyze(
                 cached = _cache_get(key)
                 if cached is not None:
                     return {**cached, "cached": True}
-            raise HTTPException(504, "Another identical lookup is still running. Please try again shortly.")
+            raise HTTPException(
+                504, "Another identical lookup is still running. Please try again shortly."
+            )
         _INFLIGHT.add(key)
 
     routine_path = None
@@ -218,7 +313,7 @@ def auto_analyze(
             try:
                 seat_plan = parse_seat_plan(seat_path)
             except Exception:
-                seat_plan = None  # Seat plan is optional — continue with routine only.
+                seat_plan = None
 
         result = build_student_routine(routine, seat_plan, section)
 
@@ -227,18 +322,56 @@ def auto_analyze(
                 f"No examinations were found for batch {result['batch']} in the selected routine."
             )
 
+        # Do not cache typo sections that only got generic batch rows with zero seat matches
+        # unless the section string appears in the official documents.
+        combined = str(routine) + " " + str(seat_plan)
+        section_in_docs = bool(re.search(re.escape(section).replace("_", "[-_]"), combined, re.I))
+        if (not section_in_docs) and result.get("matched_seat_count", 0) == 0:
+            # Still return data to the student, but do NOT pollute Firebase
+            result.update(
+                {
+                    "exam_type": exam_type,
+                    "semester": result.get("semester") or semester.title(),
+                    "year": result.get("year") or year,
+                    "seat_plan_found": bool(seat_path),
+                    "seat_plan_available": False,
+                    "source": {
+                        "automatic": True,
+                        "noticeboard": NOTICEBOARD_URL,
+                        "routine_url": docs["routine"]["url"],
+                        "routine_title": docs["routine"]["title"],
+                        "routine_file_type": docs["routine"]["file_type"],
+                        "seat_plan_url": docs["seat_plan"]["url"] if docs.get("seat_plan") else None,
+                        "seat_plan_title": docs["seat_plan"]["title"] if docs.get("seat_plan") else None,
+                        "seat_plan_file_type": docs["seat_plan"]["file_type"]
+                        if docs.get("seat_plan")
+                        else None,
+                    },
+                    "cached": False,
+                    "warnings": list(result.get("warnings") or [])
+                    + [
+                        f"Section {section} was not found in the official documents; result not saved to cache."
+                    ],
+                }
+            )
+            _cache_put(key, result)
+            return result
+
         if seat_plan and result["matched_seat_count"] < result["exam_count"]:
             result["warnings"].append(
                 f"Seat allocation matched {result['matched_seat_count']} of {result['exam_count']} examinations."
             )
         if docs.get("seat_plan") and not seat_plan:
-            result["warnings"].append("Seat plan was found but could not be parsed; showing routine only.")
+            result["warnings"].append(
+                "Seat plan was found but could not be parsed; showing routine only."
+            )
 
+        result_year = result.get("year") or year or 2026
         result.update(
             {
                 "exam_type": exam_type,
                 "semester": result.get("semester") or semester.title(),
-                "year": result.get("year") or year,
+                "year": result_year,
                 "seat_plan_found": bool(seat_path),
                 "seat_plan_available": result["matched_seat_count"] > 0,
                 "source": {
@@ -249,24 +382,28 @@ def auto_analyze(
                     "routine_file_type": docs["routine"]["file_type"],
                     "seat_plan_url": docs["seat_plan"]["url"] if docs.get("seat_plan") else None,
                     "seat_plan_title": docs["seat_plan"]["title"] if docs.get("seat_plan") else None,
-                    "seat_plan_file_type": docs["seat_plan"]["file_type"] if docs.get("seat_plan") else None,
+                    "seat_plan_file_type": docs["seat_plan"]["file_type"]
+                    if docs.get("seat_plan")
+                    else None,
                 },
                 "cached": False,
             }
         )
+
+        # Upsert this section only — never replaces the whole /routines tree
         try:
-            for section_db_url in firebase_section_paths(
-                section, exam_type, semester, result.get("year") or year
-            ):
-                url = section_db_url
-                if FIREBASE_SECRET:
-                    sep = "&" if "?" in url else "?"
-                    url = f"{url}{sep}auth={FIREBASE_SECRET}"
-                requests.put(url, json=result, timeout=5)
-            print(f"Successfully synced section {section} to Firebase (legacy + structured)!")
+            write_section_cache(section, result, exam_type, semester, result_year)
+            # Keep metadata PDF links fresh when students hit live lookup
+            write_metadata(
+                docs["routine"]["url"],
+                docs["seat_plan"]["url"] if docs.get("seat_plan") else None,
+                exam_type,
+                semester,
+                result_year,
+            )
         except Exception as e:
             print(f"Firebase sync failed for {section}: {e}")
-        
+
         _cache_put(key, result)
         return result
 
@@ -288,142 +425,151 @@ def auto_analyze(
 
 @app.post("/api/refresh")
 @app.get("/api/refresh")
-def refresh_documents(secret: Optional[str] = Query(None)):
-    """Check for new routines autonomously, dynamically find ALL sections, and sync to Firebase."""
+def refresh_documents(
+    secret: Optional[str] = Query(None),
+    force: bool = Query(
+        False,
+        description="Rebuild all sections even if routine PDF URL is unchanged.",
+    ),
+):
+    """Rebuild Firebase cache for every section found in the official PDFs.
+
+    Strategy:
+    - If force=true → always rebuild
+    - If cached section count < MIN_HEALTHY_SECTION_COUNT → auto-force (self-heal)
+    - Else if PDF URL unchanged → skip (save Render minutes)
+    - Writes are per-section upserts only (never delete the whole tree)
+    """
     if REFRESH_SECRET and secret != REFRESH_SECRET:
         raise HTTPException(403, "Invalid or missing refresh secret.")
 
-    # --- THE AUTONOMOUS BRAIN: Automatically detect the current semester ---
-    try:
-        resp = requests.get(NOTICEBOARD_URL, timeout=10)
-        # Find the first notice title containing both "CSE" and "Routine"
-        match = re.search(r'>([^<]*CSE[^<]*Routine[^<]*)<', resp.text, re.IGNORECASE)
-        
-        if match:
-            title = match.group(1).lower()
-            exam_type = "mid" if "mid" in title else "final"
-            
-            if "spring" in title: semester = "spring"
-            elif "fall" in title: semester = "fall"
-            else: semester = "summer"
-            
-            year_match = re.search(r'\b(20\d{2})\b', title)
-            year = int(year_match.group(1)) if year_match else 2026
-            
-            print(f"🤖 Auto-detected: {semester.title()} {year} {exam_type.title()} Exams")
-        else:
-            exam_type, semester, year = "final", "summer", 2026
-    except Exception:
-        print("Could not auto-detect semester. Using defaults.")
-        exam_type, semester, year = "final", "summer", 2026
-    # ---------------------------------------------------------------------
+    exam_type, semester, year = detect_term()
+    print(f"Refresh term: {semester} {year} {exam_type}")
 
-    # 1. Fetch our bookmark to see what we last processed (Added security key here!)
-    metadata_url = f"https://examroutine-d5392-default-rtdb.firebaseio.com/metadata.json?auth={FIREBASE_SECRET}"
-    try:
-        meta_resp = requests.get(metadata_url, timeout=5)
-        last_metadata = meta_resp.json() or {}
-        last_routine_url = last_metadata.get("routine_url", "")
-    except Exception:
-        last_routine_url = ""
+    existing_count = count_cached_sections()
+    auto_force = existing_count < MIN_HEALTHY_SECTION_COUNT
+    if auto_force:
+        print(
+            f"Cache thin ({existing_count} < {MIN_HEALTHY_SECTION_COUNT}) — auto-forcing full rebuild"
+        )
+        force = True
+
+    last_meta = firebase_get(FIREBASE_META_URL) or {}
+    if not isinstance(last_meta, dict):
+        last_meta = {}
+    last_routine_url = last_meta.get("routine_url") or ""
+
+    routine_path = None
+    seat_path = None
 
     try:
-        # 2. Check the Notice Board for the latest document using our Auto-Detected variables
         docs = discover_documents(
-            section="65_L", # Dummy section just to trigger discovery
+            section="65_L",
             exam_type=exam_type,
             semester=semester,
             year=year,
             include_seat_plan=True,
         )
-        
         current_routine_url = docs["routine"]["url"]
 
-        # 3. THE CATCH: Stop if the routine hasn't changed
-        if current_routine_url == last_routine_url:
-            print("No new routine found. Doing nothing.")
+        if (not force) and current_routine_url and current_routine_url == last_routine_url:
             return {
-                "ok": True, 
+                "ok": True,
                 "message": "Latest routine is already synced. Doing nothing.",
-                "routine_url": current_routine_url
+                "routine_url": current_routine_url,
+                "sections_cached": existing_count,
+                "hint": "Pass force=true to rebuild, or wait until cache drops below threshold.",
             }
 
-        # 4. Parse the new documents
-        print(f"New routine detected: {current_routine_url}. Processing...")
+        print(f"Processing routine: {current_routine_url} force={force}")
         routine_path = _write_temp(docs["routine"]["bytes"], docs["routine"]["file_type"])
-        seat_path = None
         if docs.get("seat_plan"):
             try:
                 seat_path = _write_temp(docs["seat_plan"]["bytes"], docs["seat_plan"]["file_type"])
             except Exception:
-                pass
+                seat_path = None
 
         routine_data = parse_exam_routine(routine_path)
         seat_plan_data = parse_seat_plan(seat_path) if seat_path else None
 
-        # --- THE MAGIC: DYNAMICALLY FIND EVERY SECTION ---
         combined_data = str(routine_data) + " " + str(seat_plan_data)
-        raw_sections = re.findall(r'\d{2,3}[-_][A-Z0-9]+', combined_data)
-        found_sections = {sec.replace('-', '_') for sec in raw_sections}
-        target_sections = sorted(list(found_sections))
-        print(f"Discovered {len(target_sections)} unique sections in the documents.")
-        # -------------------------------------------------
+        raw_sections = re.findall(r"\d{2,3}[-_][A-Z0-9]+", combined_data, flags=re.I)
+        found_sections = {sec.replace("-", "_").upper() for sec in raw_sections}
+        target_sections = sorted(s for s in found_sections if SECTION_RE.match(s))
+        print(f"Discovered {len(target_sections)} sections from PDFs")
 
-        # 5. Build and push the routine for every single discovered section
+        synced = 0
         for sec in target_sections:
             result = build_student_routine(routine_data, seat_plan_data, sec)
-            
-            if result.get("exams") and len(result["exams"]) > 0:
-                result.update({
+            if not result.get("exams"):
+                continue
+
+            result_year = result.get("year") or year
+            result.update(
+                {
                     "exam_type": exam_type,
                     "semester": result.get("semester") or semester.title(),
-                    "year": result.get("year") or year,
+                    "year": result_year,
                     "seat_plan_found": bool(seat_path),
                     "seat_plan_available": result.get("matched_seat_count", 0) > 0,
-                    "cached": True, 
-                })
-                
-                for section_db_url in firebase_section_paths(
-                    sec, exam_type, semester, result.get("year") or year
-                ):
-                    url = section_db_url
-                    if FIREBASE_SECRET:
-                        sep = "&" if "?" in url else "?"
-                        url = f"{url}{sep}auth={FIREBASE_SECRET}"
-                    requests.put(url, json=result, timeout=5)
-                print(f"Background Sync: Updated {sec} (legacy + structured)")
+                    "source": {
+                        "automatic": True,
+                        "noticeboard": NOTICEBOARD_URL,
+                        "routine_url": docs["routine"]["url"],
+                        "routine_title": docs["routine"]["title"],
+                        "seat_plan_url": docs["seat_plan"]["url"] if docs.get("seat_plan") else None,
+                        "seat_plan_title": docs["seat_plan"]["title"] if docs.get("seat_plan") else None,
+                    },
+                    "cached": True,
+                }
+            )
+            write_section_cache(sec, result, exam_type, semester, result_year)
+            synced += 1
 
-        # 6. Update our bookmark in Firebase
-        new_metadata = {
-            "routine_url": current_routine_url,
-            "seat_plan_url": docs["seat_plan"]["url"] if docs.get("seat_plan") else None
-        }
-        requests.put(metadata_url, json=new_metadata, timeout=5)
+        write_metadata(
+            current_routine_url,
+            docs["seat_plan"]["url"] if docs.get("seat_plan") else None,
+            exam_type,
+            semester,
+            year,
+            section_count=synced,
+        )
 
         return {
-            "ok": True, 
-            "message": f"Success! Synced {len(target_sections)} sections to Firebase.",
-            "routine_url": current_routine_url
+            "ok": True,
+            "message": f"Success! Synced {synced}/{len(target_sections)} sections.",
+            "routine_url": current_routine_url,
+            "sections_discovered": len(target_sections),
+            "sections_synced": synced,
+            "sections_cached_before": existing_count,
+            "force": force,
+            "auto_force": auto_force,
         }
 
     except Exception as exc:
         raise HTTPException(502, f"Refresh failed: {exc}") from exc
     finally:
-        for path in (locals().get('routine_path'), locals().get('seat_path')):
+        for path in (routine_path, seat_path):
             if path:
                 try:
                     os.remove(path)
                 except OSError:
                     pass
+
+
 @app.get("/api/cache-status")
 def cache_status():
-    """Lightweight status for monitoring (used by GitHub Actions / health checks)."""
     with _CACHE_LOCK:
         result_count = len(_CACHE)
+    fb_count = count_cached_sections()
+    meta = firebase_get(FIREBASE_META_URL) or {}
     return {
         "ok": True,
         "version": APP_VERSION,
         "result_cache_entries": result_count,
         "cache_ttl_seconds": CACHE_SECONDS,
+        "firebase_section_count": fb_count,
+        "firebase_healthy": fb_count >= MIN_HEALTHY_SECTION_COUNT,
+        "metadata": meta if isinstance(meta, dict) else {},
         "noticeboard": NOTICEBOARD_URL,
     }
