@@ -1248,3 +1248,65 @@ html[data-theme="dark"] .share-btn.share-copied {
     order: -1;
   }
 }
+
+/* Priority B5 — loading skeleton */
+.skeleton-panel {
+  margin-top: 16px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--card);
+}
+.skel-banner,
+.skel-block,
+.skel-row {
+  border-radius: 10px;
+  background: linear-gradient(90deg, var(--bg) 25%, var(--line) 37%, var(--bg) 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.2s ease-in-out infinite;
+}
+.skel-banner { height: 52px; margin-bottom: 14px; }
+.skel-meta {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.skel-block { height: 54px; }
+.skel-row { height: 42px; margin-bottom: 10px; }
+.skel-row.short { width: 70%; }
+@keyframes shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: 0 0; }
+}
+@media (max-width: 700px) {
+  .skel-meta { grid-template-columns: 1fr; }
+}
+
+/* Priority B6 — Did you mean chips */
+.suggest-row {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  font-weight: 650;
+}
+.suggest-chip {
+  border: 1px solid #e0b4b0;
+  background: #fff;
+  color: #a52d22;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 850;
+  cursor: pointer;
+}
+.suggest-chip:hover { background: #ffe8e5; }
+html[data-theme="dark"] .suggest-chip {
+  background: #2a1a18;
+  border-color: #5a3030;
+  color: #f0a09a;
+}
+html[data-theme="dark"] .suggest-chip:hover { background: #3a2220; }
+.status.error { line-height: 1.45; }
