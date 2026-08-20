@@ -85,57 +85,204 @@ async function autoAnalyze() {
   }, 4500);
 
   const controller = new AbortController();
+
   const timer = setTimeout(() => controller.abort(), 120000);
 
+
+
   try {
-    const fbResponse = await fetch(`${FIREBASE_BASE_URL}/${section}.json`);
-    const fbData = await fbResponse.json();
 
-    // 1. Check if the section even exists in Firebase
-    if (!fbData || !fbData.exams || fbData.exams.length === 0) {
-      throw new Error("Section not found in the official routine. Please check your spelling.");
+    // --- 1. FIREBASE INSTANT LOAD LOGIC ---
+
+    try {
+
+      const fbResponse = await fetch(`${FIREBASE_BASE_URL}/${section}.json`);
+
+      const fbData = await fbResponse.json();
+
+
+
+      if (fbData && fbData.exams && fbData.exams.length > 0) {
+
+        console.log("Loaded instantly from Firebase!");
+
+        data = fbData;
+
+        
+
+        // Stop the loading text immediately
+
+        clearInterval(progress);
+
+
+
+        renderSource();
+
+        renderResult();
+
+        generateRoutine();
+
+
+
+        const seatMessage = fbData.seat_plan_available
+
+          ? `${fbData.matched_seat_count}/${fbData.exam_count} seat allocations matched.`
+
+          : "No matching seat plan was available, so the routine is shown without room/seat columns.";
+
+
+
+        const scope = fbData.seat_plan_available ? fbData.section : `Batch ${fbData.batch}`;
+
+        
+
+        status(`Done. Found ${fbData.exam_count} examination(s) for ${scope}. ${seatMessage} (Firebase Cache - Instant)`);
+
+        
+
+        clearTimeout(timer);
+
+        setBusy(false);
+
+        return; // Exit early! Render stays asleep.
+
+      }
+
+    } catch (err) {
+
+      console.warn("Firebase fetch missed or failed, falling back to Render:", err);
+
     }
 
-    // 2. Safely check the semester and year
-    const dbSemester = String(fbData.semester || "").toLowerCase();
-    const inputSemester = String(semester || "").toLowerCase();
+    // --------------------------------------
 
-    if (dbSemester !== inputSemester || fbData.year != year) {
-      throw new Error(`Section found, but it is for an older semester (${fbData.semester} ${fbData.year}). Waiting for DIU to publish the new one.`);
+
+
+    // --- 2. EXISTING RENDER FALLBACK LOGIC ---
+
+    const q = new URLSearchParams({
+
+      section,
+
+      exam_type: examType,
+
+      semester,
+
+      year,
+
+      include_seat_plan: "true"
+
+    });
+
+
+
+    const response = await fetch(`${API}/api/auto-analyze?${q.toString()}`, {
+
+      method: "GET",
+
+      signal: controller.signal,
+
+      cache: "no-store"
+
+    });
+
+
+
+    const body = await response.json().catch(() => ({}));
+
+    
+
+    if (!response.ok) {
+
+      // Specifically catch 404 Not Found or empty results
+
+      if (response.status === 404 || (body.detail && String(body.detail).includes("not found"))) {
+
+          throw new Error("Section not found in the official routine. Please check your spelling and try again.");
+
+      }
+
+      
+
+      let message = body.detail || `Server error (${response.status})`;
+
+      if (Array.isArray(body.detail)) {
+
+        message = body.detail.map(x => x.msg || "Validation error").join(", ");
+
+      }
+
+      throw new Error(typeof message === "string" ? message : "Automatic lookup failed.");
+
     }
 
-    // 3. If everything matches, load the routine!
-    console.log("Loaded instantly from Firebase!");
-    data = fbData;
-    clearInterval(progress);
+    if (JSON.stringify(body).includes("not found in the seat-plan PDF")) {
+
+      throw new Error(`Section ${section} is invalid or not found in the official seat plan. Please check your spelling.`);
+
+    }
+
+
+
+    data = body;
 
     renderSource();
+
     renderResult();
+
     generateRoutine();
 
-    const seatMessage = fbData.seat_plan_available
-      ? `${fbData.matched_seat_count}/${fbData.exam_count} seat allocations matched.`
+
+
+    const seatMessage = body.seat_plan_available
+
+      ? `${body.matched_seat_count}/${body.exam_count} seat allocations matched.`
+
       : "No matching seat plan was available, so the routine is shown without room/seat columns.";
 
-    const scope = fbData.seat_plan_available ? fbData.section : `Batch ${fbData.batch}`;
-    status(`Done. Found ${fbData.exam_count} examination(s) for ${scope}. ${seatMessage} (Firebase Cache - Instant)`);
+
+
+    const scope = body.seat_plan_available ? body.section : `Batch ${body.batch}`;
+
+    const cacheHint = body.cached ? " (cached — instant)" : "";
+
+    status(`Done. Found ${body.exam_count} examination(s) for ${scope}. ${seatMessage}${cacheHint}`);
+
+    
 
   } catch (e) {
+
     console.error(e);
+
     let message;
+
     if (e.name === "AbortError") {
-      message = "The lookup timed out. Check your connection.";
+
+      message = "The lookup timed out. Please try again — the second attempt is usually much faster.";
+
     } else if (String(e.message || "").includes("Failed to fetch") || String(e.message || "").includes("NetworkError")) {
-      message = "Could not reach the database. Check your connection.";
+
+      message = "Could not reach the server. Check your connection or try again in a moment.";
+
     } else {
+
       message = e.message || "Automatic lookup failed.";
+
     }
+
     status(message, true);
+
   } finally {
+
     clearInterval(progress);
+
     clearTimeout(timer);
+
     setBusy(false);
+
   }
+
+}
 function renderSource() {
   const source = data?.source;
   const box = $("sourceInfo");
