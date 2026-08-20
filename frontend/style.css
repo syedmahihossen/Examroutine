@@ -1226,3 +1226,25 @@ html[data-theme="dark"] .date-rel.is-ongoing {
 .next-tag.ongoing-tag {
   background: #ee8b12;
 }
+
+.share-btn {
+  border: 1px solid #c5d4e8;
+}
+.share-btn.share-copied {
+  background: #e7f7ef !important;
+  color: #146445 !important;
+  border-color: #9ad4b8;
+}
+html[data-theme="dark"] .share-btn.share-copied {
+  background: #123528 !important;
+  color: #3dce91 !important;
+  border-color: #1e4a38;
+}
+@media (max-width: 700px) {
+  .mobile-downloads {
+    grid-template-columns: 1fr;
+  }
+  .mobile-downloads .share-btn {
+    order: -1;
+  }
+}
