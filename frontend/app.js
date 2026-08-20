@@ -1,8 +1,6 @@
-// API base URL resolution order:
-// 1. ?api=... query parameter (useful for testing)
-// 2. window.EXAM_API (set via a small config script if needed)
-// 3. localhost when developing
-// 4. Production Render backend
+// ExamRoutine frontend — patched
+// Firebase-first lookup, form submit, dark mode, collapsed verification, mobile cards
+
 const queryApi = new URLSearchParams(location.search).get("api");
 const isLocal =
   location.protocol === "file:" ||
@@ -14,15 +12,66 @@ const API =
   queryApi ||
   (isLocal ? "http://127.0.0.1:8000" : "https://examroutine.onrender.com");
 const FIREBASE_BASE_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines";
-const $ = id => document.getElementById(id);
+const THEME_KEY = "examroutine-theme";
+
+const $ = (id) => document.getElementById(id);
 let data = null;
 let busy = false;
+let detailsOpen = false;
 
-$("autoAnalyze").addEventListener("click", autoAnalyze);
-$("png").addEventListener("click", downloadPNG);
-$("pdf").addEventListener("click", downloadPDF);
-$("pngMobile").addEventListener("click", downloadPNG);
-$("pdfMobile").addEventListener("click", downloadPDF);
+initTheme();
+bindEvents();
+checkBackend();
+
+function bindEvents() {
+  $("routineForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    autoAnalyze();
+  });
+  $("png").addEventListener("click", downloadPNG);
+  $("pdf").addEventListener("click", downloadPDF);
+  $("pngMobile").addEventListener("click", downloadPNG);
+  $("pdfMobile").addEventListener("click", downloadPDF);
+  $("toggleDetails").addEventListener("click", toggleDetails);
+  $("themeToggle").addEventListener("click", toggleTheme);
+
+  // Restore last section if available
+  try {
+    const saved = localStorage.getItem("examroutine-section");
+    if (saved && /^\d{2,3}_[A-Z0-9]+$/i.test(saved)) {
+      $("section").value = saved;
+    }
+  } catch (_) {}
+}
+
+function initTheme() {
+  let theme = "light";
+  try {
+    theme = localStorage.getItem(THEME_KEY) || "light";
+  } catch (_) {}
+  if (theme === "dark") {
+    document.documentElement.setAttribute("data-theme", "dark");
+  } else {
+    document.documentElement.removeAttribute("data-theme");
+  }
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = theme === "dark" ? "#0b1220" : "#082c5c";
+}
+
+function toggleTheme() {
+  const isDark = document.documentElement.getAttribute("data-theme") === "dark";
+  const next = isDark ? "light" : "dark";
+  if (next === "dark") {
+    document.documentElement.setAttribute("data-theme", "dark");
+  } else {
+    document.documentElement.removeAttribute("data-theme");
+  }
+  try {
+    localStorage.setItem(THEME_KEY, next);
+  } catch (_) {}
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = next === "dark" ? "#0b1220" : "#082c5c";
+}
 
 async function checkBackend() {
   try {
@@ -33,7 +82,6 @@ async function checkBackend() {
     console.warn("Backend unavailable:", e.message);
   }
 }
-checkBackend();
 
 function status(message, error = false, loading = false) {
   const el = $("status");
@@ -48,6 +96,36 @@ function setBusy(value) {
   const button = $("autoAnalyze");
   button.disabled = value;
   button.classList.toggle("loading-button", value);
+  button.setAttribute("aria-busy", value ? "true" : "false");
+}
+
+function toggleDetails() {
+  detailsOpen = !detailsOpen;
+  const panel = $("exams");
+  const btn = $("toggleDetails");
+  if (detailsOpen) {
+    panel.hidden = false;
+    panel.classList.remove("collapsed");
+    btn.textContent = "Hide details";
+    btn.setAttribute("aria-expanded", "true");
+  } else {
+    panel.hidden = true;
+    panel.classList.add("collapsed");
+    btn.textContent = "Show details";
+    btn.setAttribute("aria-expanded", "false");
+  }
+}
+
+function matchesFormFilters(payload, examType, semester, year) {
+  if (!payload || !payload.exams || !payload.exams.length) return false;
+  const et = String(payload.exam_type || "").toLowerCase();
+  const sem = String(payload.semester || "").toLowerCase();
+  const yr = String(payload.year || "");
+  // Soft match: if metadata missing, accept (legacy cache entries)
+  if (et && et !== examType) return false;
+  if (sem && sem !== semester && !sem.includes(semester)) return false;
+  if (yr && year && yr !== String(year)) return false;
+  return true;
 }
 
 async function autoAnalyze() {
@@ -65,16 +143,25 @@ async function autoAnalyze() {
     return status("Enter a valid academic year, for example 2026.", true);
   }
 
+  try {
+    localStorage.setItem("examroutine-section", section);
+  } catch (_) {}
+
   setBusy(true);
   $("result").classList.add("hidden");
   $("preview").classList.add("hidden");
   $("sourceInfo").classList.add("hidden");
+  detailsOpen = false;
+  $("exams").hidden = true;
+  $("exams").classList.add("collapsed");
+  $("toggleDetails").textContent = "Show details";
+  $("toggleDetails").setAttribute("aria-expanded", "false");
 
   const steps = [
+    "Checking cache…",
     "Connecting to the DIU Notice Board…",
     "Finding the official CSE routine…",
-    "Downloading and checking the routine…",
-    "Matching your section with the seat plan…",
+    "Downloading and matching your section…",
     "Almost done — building your routine…"
   ];
   let step = 0;
@@ -85,209 +172,138 @@ async function autoAnalyze() {
   }, 4500);
 
   const controller = new AbortController();
-
   const timer = setTimeout(() => controller.abort(), 120000);
 
-
-
   try {
-
-    // --- 1. FIREBASE INSTANT LOAD LOGIC ---
-
+    // 1. Firebase instant load
     try {
-
-      const fbResponse = await fetch(`${FIREBASE_BASE_URL}/${section}.json`);
-
+      const fbResponse = await fetch(`${FIREBASE_BASE_URL}/${section}.json`, {
+        cache: "no-store"
+      });
       const fbData = await fbResponse.json();
 
-
-
-      if (fbData && fbData.exams && fbData.exams.length > 0) {
-
-        console.log("Loaded instantly from Firebase!");
-
+      if (fbData && matchesFormFilters(fbData, examType, semester, year)) {
+        console.log("Loaded from Firebase cache");
         data = fbData;
-
-        
-
-        // Stop the loading text immediately
-
         clearInterval(progress);
-
-
-
-        renderSource();
-
-        renderResult();
-
-        generateRoutine();
-
-
-
-        const seatMessage = fbData.seat_plan_available
-
-          ? `${fbData.matched_seat_count}/${fbData.exam_count} seat allocations matched.`
-
-          : "No matching seat plan was available, so the routine is shown without room/seat columns.";
-
-
-
-        const scope = fbData.seat_plan_available ? fbData.section : `Batch ${fbData.batch}`;
-
-        
-
-        status(`Done. Found ${fbData.exam_count} examination(s) for ${scope}. ${seatMessage} (Firebase Cache - Instant)`);
-
-        
-
         clearTimeout(timer);
 
+        renderSource();
+        renderResult();
+        generateRoutine();
+
+        const seatMessage = fbData.seat_plan_available
+          ? `${fbData.matched_seat_count}/${fbData.exam_count} seat allocations matched.`
+          : "No matching seat plan was available, so the routine is shown without room/seat columns.";
+        const scope = fbData.seat_plan_available ? fbData.section : `Batch ${fbData.batch}`;
+        status(`Done. Found ${fbData.exam_count} examination(s) for ${scope}. ${seatMessage} (instant cache)`);
         setBusy(false);
-
-        return; // Exit early! Render stays asleep.
-
+        $("preview").scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
       }
 
+      if (fbData && fbData.exams && fbData.exams.length) {
+        console.log("Firebase had data but filters did not match; falling back to live lookup");
+      }
     } catch (err) {
-
       console.warn("Firebase fetch missed or failed, falling back to Render:", err);
-
     }
 
-    // --------------------------------------
-
-
-
-    // --- 2. EXISTING RENDER FALLBACK LOGIC ---
-
+    // 2. Render fallback
     const q = new URLSearchParams({
-
       section,
-
       exam_type: examType,
-
       semester,
-
       year,
-
       include_seat_plan: "true"
-
     });
-
-
 
     const response = await fetch(`${API}/api/auto-analyze?${q.toString()}`, {
-
       method: "GET",
-
       signal: controller.signal,
-
       cache: "no-store"
-
     });
-
-
 
     const body = await response.json().catch(() => ({}));
 
-    
-
     if (!response.ok) {
-
-      // Specifically catch 404 Not Found or empty results
-
-      if (response.status === 404 || (body.detail && String(body.detail).includes("not found"))) {
-
-          throw new Error("Section not found in the official routine. Please check your spelling and try again.");
-
+      if (
+        response.status === 404 ||
+        (body.detail && String(body.detail).includes("not found"))
+      ) {
+        throw new Error(
+          "Section not found in the official routine. Please check your spelling and try again."
+        );
       }
-
-      
-
       let message = body.detail || `Server error (${response.status})`;
-
       if (Array.isArray(body.detail)) {
-
-        message = body.detail.map(x => x.msg || "Validation error").join(", ");
-
+        message = body.detail.map((x) => x.msg || "Validation error").join(", ");
       }
-
       throw new Error(typeof message === "string" ? message : "Automatic lookup failed.");
-
     }
 
     if (JSON.stringify(body).includes("not found in the seat-plan PDF")) {
-
-      throw new Error(`Section ${section} is invalid or not found in the official seat plan. Please check your spelling.`);
-
+      throw new Error(
+        `Section ${section} is invalid or not found in the official seat plan. Please check your spelling.`
+      );
     }
-
-
 
     data = body;
-
     renderSource();
-
     renderResult();
-
     generateRoutine();
 
-
-
     const seatMessage = body.seat_plan_available
-
       ? `${body.matched_seat_count}/${body.exam_count} seat allocations matched.`
-
       : "No matching seat plan was available, so the routine is shown without room/seat columns.";
-
-
-
     const scope = body.seat_plan_available ? body.section : `Batch ${body.batch}`;
-
     const cacheHint = body.cached ? " (cached — instant)" : "";
-
     status(`Done. Found ${body.exam_count} examination(s) for ${scope}. ${seatMessage}${cacheHint}`);
-
-    
-
+    $("preview").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (e) {
-
     console.error(e);
-
     let message;
-
     if (e.name === "AbortError") {
-
-      message = "The lookup timed out. Please try again — the second attempt is usually much faster.";
-
-    } else if (String(e.message || "").includes("Failed to fetch") || String(e.message || "").includes("NetworkError")) {
-
+      message =
+        "The lookup timed out. Please try again — the second attempt is usually much faster.";
+    } else if (
+      String(e.message || "").includes("Failed to fetch") ||
+      String(e.message || "").includes("NetworkError")
+    ) {
       message = "Could not reach the server. Check your connection or try again in a moment.";
-
     } else {
-
       message = e.message || "Automatic lookup failed.";
-
     }
-
     status(message, true);
-
   } finally {
-
     clearInterval(progress);
-
     clearTimeout(timer);
-
     setBusy(false);
-
   }
-
 }
+
 function renderSource() {
   const source = data?.source;
   const box = $("sourceInfo");
   if (!source) {
-    box.classList.add("hidden");
+    // Still show a minimal note when cache has no source object
+    if (data?.exams?.length) {
+      box.innerHTML = `
+        <div class="source-ok">
+          <span class="source-dot">✓</span>
+          <div>
+            <strong>Routine loaded</strong>
+            <small>Based on the official CSE examination schedule. Open the Notice Board to verify the latest PDF.</small>
+          </div>
+        </div>
+        <div class="source-links">
+          <a href="https://daffodilvarsity.edu.bd/noticeboard" target="_blank" rel="noopener">Open DIU Notice Board ↗</a>
+        </div>
+      `;
+      box.classList.remove("hidden");
+    } else {
+      box.classList.add("hidden");
+    }
     return;
   }
 
@@ -300,10 +316,16 @@ function renderSource() {
       </div>
     </div>
     <div class="source-links">
-      ${source.routine_url ? `<a href="${escapeAttr(source.routine_url)}" target="_blank" rel="noopener">Open routine ↗</a>` : ""}
-      ${source.seat_plan_url
-        ? `<a href="${escapeAttr(source.seat_plan_url)}" target="_blank" rel="noopener">Open seat plan ↗</a>`
-        : `<span>No matching seat plan was found.</span>`}
+      ${
+        source.routine_url
+          ? `<a href="${escapeAttr(source.routine_url)}" target="_blank" rel="noopener">Open routine ↗</a>`
+          : ""
+      }
+      ${
+        source.seat_plan_url
+          ? `<a href="${escapeAttr(source.seat_plan_url)}" target="_blank" rel="noopener">Open seat plan ↗</a>`
+          : `<span>No matching seat plan was found.</span>`
+      }
     </div>
   `;
   box.classList.remove("hidden");
@@ -323,19 +345,26 @@ function renderResult() {
   }
 
   $("warnings").innerHTML = (data.warnings || [])
-    .map(w => `<div class="warning">${escapeHtml(w)}</div>`)
+    .map((w) => `<div class="warning">${escapeHtml(w)}</div>`)
     .join("");
 
-  $("exams").innerHTML = exams.map(x => {
-    const rooms = x.rooms?.length
-      ? x.rooms.map(r => `
+  $("exams").innerHTML = exams
+    .map((x) => {
+      const rooms = x.rooms?.length
+        ? x.rooms
+            .map(
+              (r) => `
           <div class="roomline">
             <span>Room ${escapeHtml(r.room)}</span>
             <strong>${Number(r.seats) || 0} seats</strong>
-          </div>`).join("")
-      : `<span class="muted">${data.seat_plan_available ? "No matched seat allocation" : "Seat plan not available"}</span>`;
+          </div>`
+            )
+            .join("")
+        : `<span class="muted">${
+            data.seat_plan_available ? "No matched seat allocation" : "Seat plan not available"
+          }</span>`;
 
-    return `
+      return `
       <article class="exam">
         <div class="exam-date-block">
           <div class="date">${formatDate(x.date)}</div>
@@ -353,7 +382,8 @@ function renderResult() {
         ${data.seat_plan_available ? `<div class="rooms"><label>Rooms & seats</label>${rooms}</div>` : ""}
       </article>
     `;
-  }).join("");
+    })
+    .join("");
 }
 
 function generateRoutine() {
@@ -385,6 +415,35 @@ function calendarIcon() {
   </svg>`;
 }
 
+function buildMobileCards(exams, hasSeats) {
+  return exams
+    .map((x) => {
+      const rooms = x.rooms?.length
+        ? x.rooms.map((r) => `Room ${escapeHtml(r.room)} (${Number(r.seats) || 0})`).join(", ")
+        : "—";
+      const total = getExamTotal(x);
+      return `
+      <article class="mobile-exam">
+        <div class="me-top">
+          <div class="me-date">${formatDate(x.date)}</div>
+          <div class="me-day">${escapeHtml(x.day)}</div>
+        </div>
+        <div class="me-course">${escapeHtml(x.course_code)}</div>
+        <div class="me-name">${escapeHtml(x.course_name)}</div>
+        <div class="me-meta">
+          <div><span>TIME</span><strong>${escapeHtml(x.time || "—")}</strong></div>
+          ${
+            hasSeats
+              ? `<div><span>ROOMS</span><strong>${rooms}</strong></div>
+                 <div><span>TOTAL</span><strong>${total}</strong></div>`
+              : ""
+          }
+        </div>
+      </article>`;
+    })
+    .join("");
+}
+
 function buildRoutine(exams, session, hasSeats, identity, title, batch) {
   const seatHeaders = hasSeats
     ? `<th>ROOM</th><th>SEATS / ROOM</th><th>TOTAL</th>`
@@ -398,9 +457,11 @@ function buildRoutine(exams, session, hasSeats, identity, title, batch) {
       </div>
 
       <div class="meta routine-meta">
-        ${hasSeats
-          ? `<div><span>SECTION</span><strong>${identity}</strong></div>`
-          : `<div><span>BATCH</span><strong>${escapeHtml(batch)}</strong></div>`}
+        ${
+          hasSeats
+            ? `<div><span>SECTION</span><strong>${identity}</strong></div>`
+            : `<div><span>BATCH</span><strong>${escapeHtml(batch)}</strong></div>`
+        }
         <div><span>EXAMINATIONS</span><strong>${exams.length}</strong></div>
         ${hasSeats ? `<div><span>BATCH</span><strong>${escapeHtml(batch)}</strong></div>` : ""}
       </div>
@@ -412,6 +473,10 @@ function buildRoutine(exams, session, hasSeats, identity, title, batch) {
           </tr></thead>
           <tbody>${exams.map((x, i) => screenRow(x, i, hasSeats)).join("")}</tbody>
         </table>
+      </div>
+
+      <div class="mobile-exam-list">
+        ${buildMobileCards(exams, hasSeats)}
       </div>
 
       <div class="note">
@@ -436,11 +501,17 @@ function buildExport(exams, session, hasSeats, identity, title, batch) {
       <div class="export-session"><i></i><strong>${escapeHtml(session.replace("-", "–"))}</strong><i></i></div>
 
       <div class="export-meta">
-        ${hasSeats
-          ? `<div class="export-meta-item"><div><span>SECTION</span><strong>${identity}</strong></div></div>`
-          : `<div class="export-meta-item"><div><span>BATCH</span><strong>${escapeHtml(batch)}</strong></div></div>`}
+        ${
+          hasSeats
+            ? `<div class="export-meta-item"><div><span>SECTION</span><strong>${identity}</strong></div></div>`
+            : `<div class="export-meta-item"><div><span>BATCH</span><strong>${escapeHtml(batch)}</strong></div></div>`
+        }
         <div class="export-meta-item"><div><span>EXAMINATIONS</span><strong>${exams.length}</strong></div></div>
-        ${hasSeats ? `<div class="export-meta-item"><div><span>BATCH</span><strong>${escapeHtml(batch)}</strong></div></div>` : ""}
+        ${
+          hasSeats
+            ? `<div class="export-meta-item"><div><span>BATCH</span><strong>${escapeHtml(batch)}</strong></div></div>`
+            : ""
+        }
       </div>
 
       <table class="export-table ${hasSeats ? "with-seats" : "without-seats"}">
@@ -458,8 +529,12 @@ function buildExport(exams, session, hasSeats, identity, title, batch) {
 }
 
 function screenRow(x, i, hasSeats) {
-  const seats = x.rooms?.length ? x.rooms.map(r => `<div>${escapeHtml(r.room)}</div>`).join("") : "—";
-  const seatCounts = x.rooms?.length ? x.rooms.map(r => `<div>${Number(r.seats) || 0}</div>`).join("") : "—";
+  const seats = x.rooms?.length
+    ? x.rooms.map((r) => `<div>${escapeHtml(r.room)}</div>`).join("")
+    : "—";
+  const seatCounts = x.rooms?.length
+    ? x.rooms.map((r) => `<div>${Number(r.seats) || 0}</div>`).join("")
+    : "—";
   const total = getExamTotal(x);
 
   return `
@@ -468,14 +543,22 @@ function screenRow(x, i, hasSeats) {
       <td class="center">${escapeHtml(x.day)}</td>
       <td class="course-cell"><b>${escapeHtml(x.course_code)}</b><span class="course-name"> — ${escapeHtml(x.course_name)}</span></td>
       <td class="center time-cell">${escapeHtml(x.time || "—")}</td>
-      ${hasSeats ? `<td class="rooms-cell">${seats}</td><td class="center seats-cell">${seatCounts}</td><td class="center total-cell"><strong>${total}</strong></td>` : ""}
+      ${
+        hasSeats
+          ? `<td class="rooms-cell">${seats}</td><td class="center seats-cell">${seatCounts}</td><td class="center total-cell"><strong>${total}</strong></td>`
+          : ""
+      }
     </tr>
   `;
 }
 
 function exportRow(x, i, hasSeats) {
-  const rooms = x.rooms?.length ? x.rooms.map(r => `<div>${escapeHtml(r.room)}</div>`).join("") : "—";
-  const counts = x.rooms?.length ? x.rooms.map(r => `<div>${Number(r.seats) || 0}</div>`).join("") : "—";
+  const rooms = x.rooms?.length
+    ? x.rooms.map((r) => `<div>${escapeHtml(r.room)}</div>`).join("")
+    : "—";
+  const counts = x.rooms?.length
+    ? x.rooms.map((r) => `<div>${Number(r.seats) || 0}</div>`).join("")
+    : "—";
   const total = getExamTotal(x);
 
   return `
@@ -484,7 +567,11 @@ function exportRow(x, i, hasSeats) {
       <td class="export-center">${escapeHtml(x.day)}</td>
       <td class="export-course"><b>${escapeHtml(x.course_code)}</b><span> — ${escapeHtml(x.course_name)}</span></td>
       <td class="export-center export-time">${escapeHtml(x.time || "—")}</td>
-      ${hasSeats ? `<td class="export-rooms">${rooms}</td><td class="export-seats">${counts}</td><td class="export-total">${total}</td>` : ""}
+      ${
+        hasSeats
+          ? `<td class="export-rooms">${rooms}</td><td class="export-seats">${counts}</td><td class="export-total">${total}</td>`
+          : ""
+      }
     </tr>
   `;
 }
@@ -499,7 +586,7 @@ function getExamTotal(x) {
 function getBatch(section, exams) {
   const m = String(section || "").match(/^(\d+)/);
   if (m) return m[1];
-  const fromExam = exams.map(x => String(x.batch || "").match(/\d+/)).find(Boolean);
+  const fromExam = exams.map((x) => String(x.batch || "").match(/\d+/)).find(Boolean);
   return fromExam ? fromExam[0] : "—";
 }
 
@@ -510,7 +597,7 @@ async function makeCanvas() {
   const target = $("exportStage").firstElementChild;
   if (!target) throw new Error("Routine export is not ready.");
 
-  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   return window.html2canvas(target, {
     width: target.offsetWidth,
     height: target.offsetHeight,
@@ -546,14 +633,23 @@ async function downloadPDF() {
 
     const canvas = await makeCanvas();
     const pageWidth = 297;
-    const pageHeight = canvas.height / canvas.width * pageWidth;
+    const pageHeight = (canvas.height / canvas.width) * pageWidth;
     const pdf = new window.jspdf.jsPDF({
       orientation: "landscape",
       unit: "mm",
       format: [pageWidth, pageHeight],
       compress: true
     });
-    pdf.addImage(canvas.toDataURL("image/png", 1), "PNG", 0, 0, pageWidth, pageHeight, undefined, "FAST");
+    pdf.addImage(
+      canvas.toDataURL("image/png", 1),
+      "PNG",
+      0,
+      0,
+      pageWidth,
+      pageHeight,
+      undefined,
+      "FAST"
+    );
     const fileScope = data.seat_plan_available ? data.section : `batch_${data.batch}`;
     pdf.save(`${safe(fileScope)}_${String(data.exam_type || "exam").toLowerCase()}_routine.pdf`);
     status("PDF downloaded successfully.");
@@ -575,9 +671,17 @@ function formatDate(value) {
 }
 
 function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>"']/g, c => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
-  }[c]));
+  return String(value ?? "").replace(
+    /[&<>"']/g,
+    (c) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#039;"
+      })[c]
+  );
 }
 
 function escapeAttr(value) {
