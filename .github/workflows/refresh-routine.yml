@@ -2,8 +2,8 @@ name: Auto-refresh Render Backend
 
 on:
   schedule:
-    # Runs every 12 minutes to prevent Render from sleeping
-    - cron: '*/12 * * * *'
+# Runs at minute 0 past every hour
+    - cron: '0 * * * *'
   
   # Allows you to trigger this manually from the Actions tab
   workflow_dispatch: 
