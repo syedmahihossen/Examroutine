@@ -259,21 +259,38 @@ def auto_analyze(
 
 @app.post("/api/refresh")
 @app.get("/api/refresh")
-def refresh_documents(
-    exam_type: str = Query("final"),
-    semester: str = Query("summer"),
-    year: Optional[int] = Query(None),
-    secret: Optional[str] = Query(None),
-):
-    """Check for new routines, dynamically find ALL sections, and sync to Firebase."""
+def refresh_documents(secret: Optional[str] = Query(None)):
+    """Check for new routines autonomously, dynamically find ALL sections, and sync to Firebase."""
     if REFRESH_SECRET and secret != REFRESH_SECRET:
         raise HTTPException(403, "Invalid or missing refresh secret.")
 
-    exam_type = exam_type.lower().strip()
-    semester = semester.lower().strip()
+    # --- THE AUTONOMOUS BRAIN: Automatically detect the current semester ---
+    try:
+        resp = requests.get(NOTICEBOARD_URL, timeout=10)
+        # Find the first notice title containing both "CSE" and "Routine"
+        match = re.search(r'>([^<]*CSE[^<]*Routine[^<]*)<', resp.text, re.IGNORECASE)
+        
+        if match:
+            title = match.group(1).lower()
+            exam_type = "mid" if "mid" in title else "final"
+            
+            if "spring" in title: semester = "spring"
+            elif "fall" in title: semester = "fall"
+            else: semester = "summer"
+            
+            year_match = re.search(r'\b(20\d{2})\b', title)
+            year = int(year_match.group(1)) if year_match else 2026
+            
+            print(f"🤖 Auto-detected: {semester.title()} {year} {exam_type.title()} Exams")
+        else:
+            exam_type, semester, year = "final", "summer", 2026
+    except Exception:
+        print("Could not auto-detect semester. Using defaults.")
+        exam_type, semester, year = "final", "summer", 2026
+    # ---------------------------------------------------------------------
 
-    # 1. Fetch our bookmark to see what we last processed
-    metadata_url = "https://examroutine-d5392-default-rtdb.firebaseio.com/metadata.json"
+    # 1. Fetch our bookmark to see what we last processed (Added security key here!)
+    metadata_url = f"https://examroutine-d5392-default-rtdb.firebaseio.com/metadata.json?auth={FIREBASE_SECRET}"
     try:
         meta_resp = requests.get(metadata_url, timeout=5)
         last_metadata = meta_resp.json() or {}
@@ -282,7 +299,7 @@ def refresh_documents(
         last_routine_url = ""
 
     try:
-        # 2. Check the Notice Board for the latest document
+        # 2. Check the Notice Board for the latest document using our Auto-Detected variables
         docs = discover_documents(
             section="65_L", # Dummy section just to trigger discovery
             exam_type=exam_type,
@@ -316,16 +333,10 @@ def refresh_documents(
         seat_plan_data = parse_seat_plan(seat_path) if seat_path else None
 
         # --- THE MAGIC: DYNAMICALLY FIND EVERY SECTION ---
-        # Scan BOTH the routine and the seat plan data for sections
         combined_data = str(routine_data) + " " + str(seat_plan_data)
-        
-        # Find anything that looks like a section (e.g., 65_L, 65-L)
         raw_sections = re.findall(r'\d{2,3}[-_][A-Z0-9]+', combined_data)
-        
-        # Normalize everything to use underscores (e.g., forces 65-L to become 65_L)
         found_sections = {sec.replace('-', '_') for sec in raw_sections}
         target_sections = sorted(list(found_sections))
-        
         print(f"Discovered {len(target_sections)} unique sections in the documents.")
         # -------------------------------------------------
 
@@ -333,7 +344,6 @@ def refresh_documents(
         for sec in target_sections:
             result = build_student_routine(routine_data, seat_plan_data, sec)
             
-            # Only push to Firebase if the section actually has exams scheduled
             if result.get("exams") and len(result["exams"]) > 0:
                 result.update({
                     "exam_type": exam_type,
@@ -344,7 +354,7 @@ def refresh_documents(
                     "cached": True, 
                 })
                 
-                section_db_url = f"https://examroutine-d5392-default-rtdb.firebaseio.com/routines/{sec}.json?auth={FIREBASE_SECRET}"
+                section_db_url = f"{FIREBASE_BASE_URL}/{sec}.json?auth={FIREBASE_SECRET}"
                 requests.put(section_db_url, json=result, timeout=5)
                 print(f"Background Sync: Updated {sec}")
 
@@ -352,9 +362,7 @@ def refresh_documents(
         new_metadata = {
             "routine_url": current_routine_url,
             "seat_plan_url": seat_path if seat_path else None
-                       
         }
-        metadata_url = f"https://examroutine-d5392-default-rtdb.firebaseio.com/metadata.json?auth={FIREBASE_SECRET}"
         requests.put(metadata_url, json=new_metadata, timeout=5)
 
         return {
@@ -372,7 +380,6 @@ def refresh_documents(
                     os.remove(path)
                 except OSError:
                     pass
-
 @app.get("/api/cache-status")
 def cache_status():
     """Lightweight status for monitoring (used by GitHub Actions / health checks)."""
