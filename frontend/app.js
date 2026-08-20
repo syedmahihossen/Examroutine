@@ -88,37 +88,37 @@ async function autoAnalyze() {
   const timer = setTimeout(() => controller.abort(), 120000);
 
   try {
-    // --- 100% FIREBASE-DRIVEN LOGIC ---
     const fbResponse = await fetch(`${FIREBASE_BASE_URL}/${section}.json`);
     const fbData = await fbResponse.json();
 
-    // Check if data exists AND matches the selected semester and year
-    if (fbData && fbData.exams && fbData.exams.length > 0 && 
-        fbData.semester.toLowerCase() === semester.toLowerCase() && 
-        fbData.year == year) {
-        
-      console.log("Loaded instantly from Firebase!");
-      data = fbData;
-      
-      // Stop the loading text immediately
-      clearInterval(progress);
-
-      renderSource();
-      renderResult();
-      generateRoutine();
-
-      const seatMessage = fbData.seat_plan_available
-        ? `${fbData.matched_seat_count}/${fbData.exam_count} seat allocations matched.`
-        : "No matching seat plan was available, so the routine is shown without room/seat columns.";
-
-      const scope = fbData.seat_plan_available ? fbData.section : `Batch ${fbData.batch}`;
-      
-      status(`Done. Found ${fbData.exam_count} examination(s) for ${scope}. ${seatMessage} (Firebase Cache - Instant)`);
-      
-    } else {
-      // If it's missing or from an old semester, throw an error immediately!
-      throw new Error("Section not found in the current official routine. Please check your spelling and try again.");
+    // 1. Check if the section even exists in Firebase
+    if (!fbData || !fbData.exams || fbData.exams.length === 0) {
+      throw new Error("Section not found in the official routine. Please check your spelling.");
     }
+
+    // 2. Safely check the semester and year
+    const dbSemester = String(fbData.semester || "").toLowerCase();
+    const inputSemester = String(semester || "").toLowerCase();
+
+    if (dbSemester !== inputSemester || fbData.year != year) {
+      throw new Error(`Section found, but it is for an older semester (${fbData.semester} ${fbData.year}). Waiting for DIU to publish the new one.`);
+    }
+
+    // 3. If everything matches, load the routine!
+    console.log("Loaded instantly from Firebase!");
+    data = fbData;
+    clearInterval(progress);
+
+    renderSource();
+    renderResult();
+    generateRoutine();
+
+    const seatMessage = fbData.seat_plan_available
+      ? `${fbData.matched_seat_count}/${fbData.exam_count} seat allocations matched.`
+      : "No matching seat plan was available, so the routine is shown without room/seat columns.";
+
+    const scope = fbData.seat_plan_available ? fbData.section : `Batch ${fbData.batch}`;
+    status(`Done. Found ${fbData.exam_count} examination(s) for ${scope}. ${seatMessage} (Firebase Cache - Instant)`);
 
   } catch (e) {
     console.error(e);
