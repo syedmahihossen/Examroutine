@@ -285,24 +285,7 @@ function isUsableRoutine(json) {
 }
 
 async function fetchFirebaseRoutine(section, examType, semester, year) {
-  // 1) Legacy flat key first (what production actually has today)
-  try {
-    const r = await fetch(legacyRoutineUrl(section), { cache: "no-store" });
-    if (r.ok) {
-      const json = await r.json();
-      if (isUsableRoutine(json) && matchesFormFilters(json, examType, semester, year)) {
-        return { data: json, source: "legacy" };
-      }
-      if (isUsableRoutine(json)) {
-        // Prefer showing cached routine even if semester/year metadata differs slightly
-        return { data: json, source: "legacy" };
-      }
-    }
-  } catch (e) {
-    console.warn("Legacy Firebase miss:", e.message);
-  }
-
-  // 2) Structured key (routines_v2) — populated only after backend redeploy
+  // 1) Structured key (routines_v2) — exact section/exam/semester/year
   try {
     const r = await fetch(structuredRoutineUrl(section, examType, semester, year), {
       cache: "no-store"
@@ -315,6 +298,23 @@ async function fetchFirebaseRoutine(section, examType, semester, year) {
     }
   } catch (e) {
     console.warn("Structured Firebase miss:", e.message);
+  }
+
+  // 2) Legacy flat key (always kept for compatibility)
+  try {
+    const r = await fetch(legacyRoutineUrl(section), { cache: "no-store" });
+    if (r.ok) {
+      const json = await r.json();
+      if (isUsableRoutine(json) && matchesFormFilters(json, examType, semester, year)) {
+        return { data: json, source: "legacy" };
+      }
+      if (isUsableRoutine(json)) {
+        // Show cached routine even if metadata is incomplete
+        return { data: json, source: "legacy" };
+      }
+    }
+  } catch (e) {
+    console.warn("Legacy Firebase miss:", e.message);
   }
 
   return null;
