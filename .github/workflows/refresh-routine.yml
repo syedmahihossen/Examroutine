@@ -12,8 +12,6 @@ jobs:
   warm-cache:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping and Warm Render Cache
+      - name: Ping the Autonomous Engine
         run: |
-          curl -sS "${{ secrets.BACKEND_URL }}/api/refresh?exam_type=final&semester=summer&year=2026&secret=${{ secrets.REFRESH_SECRET }}"
-          
-          curl -sS "${{ secrets.BACKEND_URL }}/api/auto-analyze?section=65_L&exam_type=final&semester=summer&year=2026&include_seat_plan=true"
+          curl -sS "${{ secrets.BACKEND_URL }}/api/refresh?secret=${{ secrets.REFRESH_SECRET }}"
