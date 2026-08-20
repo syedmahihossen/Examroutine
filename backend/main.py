@@ -361,7 +361,7 @@ def refresh_documents(secret: Optional[str] = Query(None)):
         # 6. Update our bookmark in Firebase
         new_metadata = {
             "routine_url": current_routine_url,
-            "seat_plan_url": seat_path if seat_path else None
+            "seat_plan_url": docs["seat_plan"]["url"] if docs.get("seat_plan") else None
         }
         requests.put(metadata_url, json=new_metadata, timeout=5)
 
