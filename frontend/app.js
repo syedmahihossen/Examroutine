@@ -409,11 +409,8 @@ function generateRoutine() {
 }
 
 function findNextExamIndex(exams) {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
   for (let i = 0; i < exams.length; i++) {
-    const d = parseExamDate(exams[i].date);
-    if (d && d >= today) return i;
+    if (!isExamFinished(exams[i])) return i;
   }
   return -1;
 }
@@ -424,7 +421,79 @@ function parseExamDate(value) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-function daysUntil(value) {
+/** Parse strings like "09:00 AM - 11:00 AM" or "9:00AM-11:00AM". Returns {start, end} in minutes from midnight, or null. */
+function parseTimeRange(timeStr) {
+  if (!timeStr) return null;
+  const text = String(timeStr).trim();
+  const parts = text.split(/\s*[-–—]\s*/);
+  const parseOne = (chunk) => {
+    const m = String(chunk)
+      .trim()
+      .match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+    if (!m) return null;
+    let h = Number(m[1]);
+    const min = Number(m[2]);
+    const ap = (m[3] || "").toUpperCase();
+    if (ap === "PM" && h < 12) h += 12;
+    if (ap === "AM" && h === 12) h = 0;
+    if (!ap && h > 23) return null;
+    return h * 60 + min;
+  };
+  if (parts.length >= 2) {
+    const start = parseOne(parts[0]);
+    const end = parseOne(parts[1]);
+    if (start == null || end == null) return null;
+    return { start, end };
+  }
+  const only = parseOne(parts[0]);
+  if (only == null) return null;
+  // Single time → assume 2-hour exam
+  return { start: only, end: only + 120 };
+}
+
+/** End Date of an exam (date + end time). Falls back to end of that calendar day. */
+function getExamEndDate(exam) {
+  const base = parseExamDate(exam?.date);
+  if (!base) return null;
+  const range = parseTimeRange(exam?.time);
+  const end = new Date(base);
+  if (range) {
+    end.setHours(Math.floor(range.end / 60), range.end % 60, 0, 0);
+  } else {
+    end.setHours(23, 59, 59, 999);
+  }
+  return end;
+}
+
+/** Start Date of an exam (date + start time). */
+function getExamStartDate(exam) {
+  const base = parseExamDate(exam?.date);
+  if (!base) return null;
+  const range = parseTimeRange(exam?.time);
+  const start = new Date(base);
+  if (range) {
+    start.setHours(Math.floor(range.start / 60), range.start % 60, 0, 0);
+  } else {
+    start.setHours(0, 0, 0, 0);
+  }
+  return start;
+}
+
+function isExamFinished(exam) {
+  const end = getExamEndDate(exam);
+  if (!end) return false;
+  return Date.now() > end.getTime();
+}
+
+function isExamOngoing(exam) {
+  const start = getExamStartDate(exam);
+  const end = getExamEndDate(exam);
+  if (!start || !end) return false;
+  const now = Date.now();
+  return now >= start.getTime() && now <= end.getTime();
+}
+
+function daysUntilDate(value) {
   const d = parseExamDate(value);
   if (!d) return null;
   const today = new Date();
@@ -432,12 +501,15 @@ function daysUntil(value) {
   return Math.round((d - today) / 86400000);
 }
 
-function relativeLabel(value) {
-  const n = daysUntil(value);
+function relativeLabel(exam) {
+  if (!exam) return "";
+  if (isExamFinished(exam)) return "Done";
+  if (isExamOngoing(exam)) return "Ongoing";
+  const n = daysUntilDate(exam.date);
   if (n === null) return "";
-  if (n < 0) return "Done";
   if (n === 0) return "Today";
   if (n === 1) return "Tomorrow";
+  if (n < 0) return "Done";
   return `In ${n} days`;
 }
 
@@ -465,14 +537,14 @@ function buildNextBanner(exams, nextIdx) {
     return `<div class="next-banner next-done">All listed examinations are in the past.</div>`;
   }
   const x = exams[nextIdx];
-  const rel = relativeLabel(x.date);
+  const rel = relativeLabel(x);
   const rooms = x.rooms?.length
     ? x.rooms.map((r) => `R${escapeHtml(r.room)}`).join(", ")
     : "";
   return `
     <div class="next-banner">
       <div class="next-left">
-        <span class="next-tag">${escapeHtml(rel)}</span>
+        <span class="next-tag ${rel === "Ongoing" ? "ongoing-tag" : ""}">${escapeHtml(rel)}</span>
         <div>
           <strong>Next: ${escapeHtml(x.course_code)}</strong>
           <span class="next-sub">${escapeHtml(x.course_name)}</span>
@@ -497,11 +569,12 @@ function buildMobileCards(exams, hasSeats, nextIdx) {
             .join("")
         : "—";
       const total = getExamTotal(x);
-      const rel = relativeLabel(x.date);
+      const rel = relativeLabel(x);
       const isNext = i === nextIdx;
-      const isPast = (daysUntil(x.date) ?? 0) < 0;
+      const isPast = isExamFinished(x);
+      const isOngoing = isExamOngoing(x);
       return `
-      <article class="mobile-exam ${isNext ? "is-next" : ""} ${isPast ? "is-past" : ""}">
+      <article class="mobile-exam ${isNext ? "is-next" : ""} ${isPast ? "is-past" : ""} ${isOngoing ? "is-ongoing" : ""}">
         <div class="me-top">
           <div class="me-date">${formatDate(x.date)}</div>
           <div class="me-badges">
@@ -615,8 +688,9 @@ function buildExport(exams, session, hasSeats, identity, title, batch) {
 function screenRow(x, i, hasSeats, nextIdx) {
   const parts = formatDateParts(x.date);
   const isNext = i === nextIdx;
-  const isPast = (daysUntil(x.date) ?? 0) < 0;
-  const rel = relativeLabel(x.date);
+  const isPast = isExamFinished(x);
+  const isOngoing = isExamOngoing(x);
+  const rel = relativeLabel(x);
 
   const rooms = x.rooms?.length
     ? x.rooms.map((r) => `<div class="room-no">${escapeHtml(r.room)}</div>`).join("")
@@ -627,7 +701,7 @@ function screenRow(x, i, hasSeats, nextIdx) {
   const total = getExamTotal(x);
 
   return `
-    <tr class="screen-row-${i % 4} ${isNext ? "row-next" : ""} ${isPast ? "row-past" : ""}">
+    <tr class="screen-row-${i % 4} ${isNext ? "row-next" : ""} ${isPast ? "row-past" : ""} ${isOngoing ? "row-ongoing" : ""}">
       <td class="date-cell">
         <div class="date-stack">
           <div class="date-main">
@@ -637,7 +711,7 @@ function screenRow(x, i, hasSeats, nextIdx) {
               <span class="date-year">${parts.year}</span>
             </div>
           </div>
-          ${rel ? `<span class="date-rel ${isNext ? "is-next" : ""} ${isPast ? "is-past" : ""}">${escapeHtml(rel)}</span>` : ""}
+          ${rel ? `<span class="date-rel ${isNext ? "is-next" : ""} ${isPast ? "is-past" : ""} ${isOngoing ? "is-ongoing" : ""}">${escapeHtml(rel)}</span>` : ""}
         </div>
       </td>
       <td class="center day-cell">${escapeHtml(x.day)}</td>
