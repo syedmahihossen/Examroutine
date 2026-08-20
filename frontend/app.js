@@ -13,6 +13,7 @@ const API =
   (isLocal ? "http://127.0.0.1:8000" : "https://examroutine.onrender.com");
 const FIREBASE_BASE_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines";
 const FIREBASE_META_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/metadata.json";
+const FIREBASE_INDEX_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines.json?shallow=true";
 const THEME_KEY = "examroutine-theme";
 
 const $ = (id) => document.getElementById(id);
@@ -21,12 +22,15 @@ let busy = false;
 let detailsOpen = false;
 let statusTimer = null;
 let sharedMeta = null; // { routine_url, seat_plan_url } from Firebase metadata
+let sectionIndex = null; // string[] of known section keys from Firebase
+let sectionIndexPromise = null;
 
 initTheme();
 bindEvents();
 applyUrlParams();
 checkBackend();
 prefetchMetadata();
+prefetchSectionIndex();
 maybeAutoSearchFromUrl();
 
 function bindEvents() {
@@ -262,6 +266,176 @@ function matchesFormFilters(payload, examType, semester, year) {
   return true;
 }
 
+
+/** Priority B4: legacy flat key (production) + optional structured key under routines_v2
+ *  NOTE: Never nest under /routines/{section}/... — that would wipe the legacy object in RTDB.
+ */
+const FIREBASE_V2_BASE = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines_v2";
+
+function structuredRoutineUrl(section, examType, semester, year) {
+  return `${FIREBASE_V2_BASE}/${encodeURIComponent(section)}/${encodeURIComponent(examType)}/${encodeURIComponent(semester)}/${encodeURIComponent(year)}.json`;
+}
+
+function legacyRoutineUrl(section) {
+  return `${FIREBASE_BASE_URL}/${encodeURIComponent(section)}.json`;
+}
+
+function isUsableRoutine(json) {
+  return Boolean(json && Array.isArray(json.exams) && json.exams.length > 0);
+}
+
+async function fetchFirebaseRoutine(section, examType, semester, year) {
+  // 1) Legacy flat key first (what production actually has today)
+  try {
+    const r = await fetch(legacyRoutineUrl(section), { cache: "no-store" });
+    if (r.ok) {
+      const json = await r.json();
+      if (isUsableRoutine(json) && matchesFormFilters(json, examType, semester, year)) {
+        return { data: json, source: "legacy" };
+      }
+      if (isUsableRoutine(json)) {
+        // Prefer showing cached routine even if semester/year metadata differs slightly
+        return { data: json, source: "legacy" };
+      }
+    }
+  } catch (e) {
+    console.warn("Legacy Firebase miss:", e.message);
+  }
+
+  // 2) Structured key (routines_v2) — populated only after backend redeploy
+  try {
+    const r = await fetch(structuredRoutineUrl(section, examType, semester, year), {
+      cache: "no-store"
+    });
+    if (r.ok) {
+      const json = await r.json();
+      if (isUsableRoutine(json)) {
+        return { data: json, source: "structured" };
+      }
+    }
+  } catch (e) {
+    console.warn("Structured Firebase miss:", e.message);
+  }
+
+  return null;
+}
+
+/** Priority B6: section index for "Did you mean?" */
+async function prefetchSectionIndex() {
+  if (sectionIndexPromise) return sectionIndexPromise;
+  sectionIndexPromise = (async () => {
+    try {
+      const r = await fetch(FIREBASE_INDEX_URL, { cache: "no-store" });
+      if (!r.ok) return;
+      const map = await r.json();
+      if (map && typeof map === "object") {
+        sectionIndex = Object.keys(map)
+          .filter((k) => /^\d{2,3}_[A-Z0-9]+$/i.test(k))
+          .map((k) => k.toUpperCase());
+      }
+    } catch (e) {
+      console.warn("Section index prefetch failed:", e.message);
+    }
+  })();
+  return sectionIndexPromise;
+}
+
+function suggestSections(input, limit = 5) {
+  if (!sectionIndex || !sectionIndex.length) return [];
+  const q = String(input || "").toUpperCase().replace(/-/g, "_");
+  if (!q) return [];
+
+  const scored = sectionIndex.map((sec) => {
+    let score = 0;
+    if (sec === q) score = 1000;
+    else if (sec.startsWith(q)) score = 500 - (sec.length - q.length);
+    else if (sec.includes(q)) score = 200;
+    else {
+      // same batch prefix e.g. 65_
+      const batch = q.split("_")[0];
+      if (batch && sec.startsWith(batch + "_")) score = 100;
+      // letter distance on suffix
+      const qa = q.split("_")[1] || "";
+      const sa = sec.split("_")[1] || "";
+      if (batch && sec.startsWith(batch + "_") && qa && sa) {
+        if (sa.startsWith(qa) || qa.startsWith(sa)) score = 150;
+        else if (Math.abs(sa.charCodeAt(0) - qa.charCodeAt(0)) === 1) score = 80;
+      }
+    }
+    return { sec, score };
+  });
+
+  return scored
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score || a.sec.localeCompare(b.sec))
+    .slice(0, limit)
+    .map((x) => x.sec);
+}
+
+function showSuggestions(section, opts = {}) {
+  const suggestions = suggestSections(section);
+  const el = $("status");
+  el.classList.remove("hidden", "loading");
+  el.classList.add("error");
+
+  const chips = suggestions.length
+    ? `<div class="suggest-row">Did you mean?
+        ${suggestions
+          .map(
+            (s) =>
+              `<button type="button" class="suggest-chip" data-section="${escapeAttr(s)}">${escapeHtml(s)}</button>`
+          )
+          .join("")}
+      </div>`
+    : `<div class="suggest-row">No similar sections found in the cache.</div>`;
+
+  const liveBtn = opts.allowLive
+    ? `<div class="suggest-row">
+         <button type="button" class="suggest-chip suggest-live" id="forceLiveSearch">Search live on Notice Board</button>
+       </div>`
+    : "";
+
+  el.innerHTML = `
+    <div>Section <strong>${escapeHtml(section)}</strong> was not found in the cache.</div>
+    ${chips}
+    ${liveBtn}`;
+
+  el.querySelectorAll(".suggest-chip[data-section]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      $("section").value = btn.getAttribute("data-section");
+      autoAnalyze();
+    });
+  });
+
+  const live = el.querySelector("#forceLiveSearch");
+  if (live) {
+    live.addEventListener("click", () => forceLiveSearch(section));
+  }
+}
+
+/** Bypass cache and hit Render (cold start possible). */
+async function forceLiveSearch(section) {
+  if (busy) return;
+  $("section").value = section;
+  // Mark so autoAnalyze skips the early "not in index" return
+  window.__forceLiveSearch = true;
+  await autoAnalyze();
+  window.__forceLiveSearch = false;
+}
+
+/** Priority B5: skeleton while loading */
+function showSkeleton() {
+  const box = $("skeleton");
+  if (box) box.classList.remove("hidden");
+  $("result").classList.add("hidden");
+  $("preview").classList.add("hidden");
+}
+
+function hideSkeleton() {
+  const box = $("skeleton");
+  if (box) box.classList.add("hidden");
+}
+
 async function autoAnalyze() {
   if (busy) return;
 
@@ -308,19 +482,20 @@ async function autoAnalyze() {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 120000);
 
-  try {
-    // 1. Firebase instant load
-    try {
-      const fbResponse = await fetch(`${FIREBASE_BASE_URL}/${section}.json`, {
-        cache: "no-store"
-      });
-      const fbData = await fbResponse.json();
+  showSkeleton();
 
-      if (fbData && matchesFormFilters(fbData, examType, semester, year)) {
-        console.log("Loaded from Firebase cache");
-        data = ensureSourceFromMeta(fbData);
+  try {
+    // 1. Firebase instant load (legacy first, then routines_v2)
+    try {
+      await prefetchSectionIndex();
+      const fbHit = await fetchFirebaseRoutine(section, examType, semester, year);
+
+      if (fbHit && isUsableRoutine(fbHit.data)) {
+        console.log("Loaded from Firebase:", fbHit.source);
+        data = ensureSourceFromMeta(fbHit.data);
         clearInterval(progress);
         clearTimeout(timer);
+        hideSkeleton();
 
         syncUrlFromForm();
         renderSource();
@@ -328,24 +503,34 @@ async function autoAnalyze() {
         generateRoutine();
         startStatusClock();
 
+        const fbData = fbHit.data;
         const seatMessage = fbData.seat_plan_available
           ? `${fbData.matched_seat_count}/${fbData.exam_count} seat allocations matched.`
           : "No matching seat plan was available, so the routine is shown without room/seat columns.";
         const scope = fbData.seat_plan_available ? fbData.section : `Batch ${fbData.batch}`;
-        status(`Done. Found ${fbData.exam_count} examination(s) for ${scope}. ${seatMessage} (instant cache)`);
+        const via = fbHit.source === "structured" ? "structured cache" : "instant cache";
+        status(`Done. Found ${fbData.exam_count} examination(s) for ${scope}. ${seatMessage} (${via})`);
         setBusy(false);
         $("preview").scrollIntoView({ behavior: "smooth", block: "start" });
         return;
       }
 
-      if (fbData && fbData.exams && fbData.exams.length) {
-        console.log("Firebase had data but filters did not match; falling back to live lookup");
+      // Not in Firebase — suggest similar sections immediately (don't wait for cold Render)
+      await prefetchSectionIndex();
+      const known = Array.isArray(sectionIndex) && sectionIndex.includes(section);
+      if (!known && !window.__forceLiveSearch) {
+        clearInterval(progress);
+        clearTimeout(timer);
+        hideSkeleton();
+        showSuggestions(section, { allowLive: true });
+        setBusy(false);
+        return;
       }
     } catch (err) {
       console.warn("Firebase fetch missed or failed, falling back to Render:", err);
     }
 
-    // 2. Render fallback
+    // 2. Render fallback (known section missing from cache, or force live)
     const q = new URLSearchParams({
       section,
       exam_type: examType,
@@ -385,6 +570,7 @@ async function autoAnalyze() {
     }
 
     data = ensureSourceFromMeta(body);
+    hideSkeleton();
     syncUrlFromForm();
     renderSource();
     renderResult();
@@ -400,22 +586,29 @@ async function autoAnalyze() {
     $("preview").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (e) {
     console.error(e);
-    let message;
-    if (e.name === "AbortError") {
-      message =
-        "The lookup timed out. Please try again — the second attempt is usually much faster.";
-    } else if (
-      String(e.message || "").includes("Failed to fetch") ||
-      String(e.message || "").includes("NetworkError")
+    hideSkeleton();
+    const msg = String(e.message || "");
+    if (
+      msg.includes("not found") ||
+      msg.includes("Section not found") ||
+      msg.includes("invalid or not found")
     ) {
-      message = "Could not reach the server. Check your connection or try again in a moment.";
+      await prefetchSectionIndex();
+      showSuggestions(section);
+    } else if (e.name === "AbortError") {
+      status(
+        "The lookup timed out. Please try again — the second attempt is usually much faster.",
+        true
+      );
+    } else if (msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
+      status("Could not reach the server. Check your connection or try again in a moment.", true);
     } else {
-      message = e.message || "Automatic lookup failed.";
+      status(msg || "Automatic lookup failed.", true);
     }
-    status(message, true);
   } finally {
     clearInterval(progress);
     clearTimeout(timer);
+    hideSkeleton();
     setBusy(false);
   }
 }
