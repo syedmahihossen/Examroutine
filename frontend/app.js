@@ -12,16 +12,22 @@ const API =
   queryApi ||
   (isLocal ? "http://127.0.0.1:8000" : "https://examroutine.onrender.com");
 const FIREBASE_BASE_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines";
+const FIREBASE_META_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/metadata.json";
 const THEME_KEY = "examroutine-theme";
 
 const $ = (id) => document.getElementById(id);
 let data = null;
 let busy = false;
 let detailsOpen = false;
+let statusTimer = null;
+let sharedMeta = null; // { routine_url, seat_plan_url } from Firebase metadata
 
 initTheme();
 bindEvents();
+applyUrlParams();
 checkBackend();
+prefetchMetadata();
+maybeAutoSearchFromUrl();
 
 function bindEvents() {
   $("routineForm").addEventListener("submit", (e) => {
@@ -32,17 +38,145 @@ function bindEvents() {
   $("pdf").addEventListener("click", downloadPDF);
   $("pngMobile").addEventListener("click", downloadPNG);
   $("pdfMobile").addEventListener("click", downloadPDF);
+  $("shareLink").addEventListener("click", copyShareLink);
+  $("shareLinkMobile").addEventListener("click", copyShareLink);
   $("toggleDetails").addEventListener("click", toggleDetails);
   $("themeToggle").addEventListener("click", toggleTheme);
 
-  // Restore last section if available
-  try {
-    const saved = localStorage.getItem("examroutine-section");
-    if (saved && /^\d{2,3}_[A-Z0-9]+$/i.test(saved)) {
-      $("section").value = saved;
+  // Restore last section if URL did not provide one
+  if (!$("section").value) {
+    try {
+      const saved = localStorage.getItem("examroutine-section");
+      if (saved && /^\d{2,3}_[A-Z0-9]+$/i.test(saved)) {
+        $("section").value = saved;
+      }
+    } catch (_) {}
+  }
+}
+
+/** Priority A2: ?section=65_K&semester=summer&year=2026&exam=final&auto=1 */
+function applyUrlParams() {
+  const q = new URLSearchParams(location.search);
+  const section = (q.get("section") || "").trim().toUpperCase().replace(/-/g, "_");
+  if (/^\d{2,3}_[A-Z0-9]+$/.test(section)) {
+    $("section").value = section;
+  }
+  const semester = (q.get("semester") || "").toLowerCase();
+  if (["spring", "summer", "fall"].includes(semester)) {
+    $("semester").value = semester;
+  }
+  const year = (q.get("year") || "").trim();
+  if (/^20\d{2}$/.test(year)) {
+    const sel = $("academicYear");
+    if (![...sel.options].some((o) => o.value === year)) {
+      const opt = document.createElement("option");
+      opt.value = year;
+      opt.textContent = year;
+      sel.appendChild(opt);
     }
+    sel.value = year;
+  }
+  const exam = (q.get("exam") || q.get("exam_type") || q.get("type") || "").toLowerCase();
+  if (exam === "mid" || exam === "final") {
+    $("examType").value = exam;
+  }
+}
+
+function maybeAutoSearchFromUrl() {
+  const q = new URLSearchParams(location.search);
+  const section = (q.get("section") || "").trim();
+  const auto = q.get("auto");
+  // Auto-run when section is in URL, unless auto=0
+  if (section && auto !== "0" && auto !== "false") {
+    // Slight delay so the form is painted
+    setTimeout(() => autoAnalyze(), 50);
+  }
+}
+
+function syncUrlFromForm() {
+  try {
+    const section = $("section").value.trim().toUpperCase().replace(/-/g, "_");
+    if (!/^\d{2,3}_[A-Z0-9]+$/.test(section)) return;
+    const params = new URLSearchParams();
+    params.set("section", section);
+    params.set("semester", $("semester").value);
+    params.set("year", $("academicYear").value);
+    params.set("exam", $("examType").value);
+    const url = `${location.pathname}?${params.toString()}`;
+    history.replaceState(null, "", url);
   } catch (_) {}
 }
+
+/** Priority A3: official PDF URLs from Firebase metadata */
+async function prefetchMetadata() {
+  try {
+    const r = await fetch(FIREBASE_META_URL, { cache: "no-store" });
+    if (!r.ok) return;
+    const meta = await r.json();
+    if (meta && (meta.routine_url || meta.seat_plan_url)) {
+      sharedMeta = meta;
+      // If routine already on screen without source links, refresh the box
+      if (data?.exams?.length) renderSource();
+    }
+  } catch (e) {
+    console.warn("Metadata prefetch failed:", e.message);
+  }
+}
+
+function ensureSourceFromMeta(payload) {
+  if (!payload) return payload;
+  const hasSource =
+    payload.source && (payload.source.routine_url || payload.source.seat_plan_url);
+  if (hasSource || !sharedMeta) return payload;
+  return {
+    ...payload,
+    source: {
+      automatic: true,
+      routine_url: sharedMeta.routine_url || null,
+      seat_plan_url: sharedMeta.seat_plan_url || null,
+      routine_title: "Official examination routine (from Notice Board cache)"
+    }
+  };
+}
+
+/** Priority A1: re-render labels when exam end times pass */
+function startStatusClock() {
+  stopStatusClock();
+  if (!data?.exams?.length) return;
+
+  const tick = () => {
+    if (!data?.exams?.length || document.hidden) return;
+    // Re-render routine UI only (banner, Done/Ongoing badges) — no network
+    try {
+      generateRoutine();
+      if (detailsOpen) renderResult();
+    } catch (e) {
+      console.warn("Status refresh failed:", e);
+    }
+  };
+
+  // Align to the next minute boundary, then every 30s
+  const msToNextMinute = 60000 - (Date.now() % 60000);
+  statusTimer = setTimeout(() => {
+    tick();
+    statusTimer = setInterval(tick, 30000);
+  }, Math.min(msToNextMinute, 30000));
+}
+
+function stopStatusClock() {
+  if (!statusTimer) return;
+  clearTimeout(statusTimer);
+  clearInterval(statusTimer);
+  statusTimer = null;
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && data?.exams?.length) {
+    try {
+      generateRoutine();
+    } catch (_) {}
+  }
+});
 
 function initTheme() {
   let theme = "light";
@@ -184,13 +318,15 @@ async function autoAnalyze() {
 
       if (fbData && matchesFormFilters(fbData, examType, semester, year)) {
         console.log("Loaded from Firebase cache");
-        data = fbData;
+        data = ensureSourceFromMeta(fbData);
         clearInterval(progress);
         clearTimeout(timer);
 
+        syncUrlFromForm();
         renderSource();
         renderResult();
         generateRoutine();
+        startStatusClock();
 
         const seatMessage = fbData.seat_plan_available
           ? `${fbData.matched_seat_count}/${fbData.exam_count} seat allocations matched.`
@@ -248,10 +384,12 @@ async function autoAnalyze() {
       );
     }
 
-    data = body;
+    data = ensureSourceFromMeta(body);
+    syncUrlFromForm();
     renderSource();
     renderResult();
     generateRoutine();
+    startStatusClock();
 
     const seatMessage = body.seat_plan_available
       ? `${body.matched_seat_count}/${body.exam_count} seat allocations matched.`
@@ -785,6 +923,64 @@ async function makeCanvas() {
     backgroundColor: "#ffffff",
     logging: false
   });
+}
+
+function buildShareUrl() {
+  const section = ($("section").value || data?.section || "")
+    .trim()
+    .toUpperCase()
+    .replace(/-/g, "_");
+  const params = new URLSearchParams();
+  if (/^\d{2,3}_[A-Z0-9]+$/.test(section)) params.set("section", section);
+  params.set("semester", $("semester").value || String(data?.semester || "summer").toLowerCase());
+  params.set("year", $("academicYear").value || String(data?.year || "2026"));
+  params.set(
+    "exam",
+    $("examType").value || String(data?.exam_type || "final").toLowerCase()
+  );
+  return `${location.origin}${location.pathname}?${params.toString()}`;
+}
+
+async function copyShareLink() {
+  if (!data?.exams?.length) {
+    return status("Generate your routine first, then copy the link.", true);
+  }
+  syncUrlFromForm();
+  const url = buildShareUrl();
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(url);
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    status("Link copied — share it with your classmates.");
+    flashShareButtons("✓ Copied");
+  } catch (e) {
+    console.error(e);
+    status(`Could not copy automatically. Link: ${url}`, true);
+  }
+}
+
+function flashShareButtons(label) {
+  for (const id of ["shareLink", "shareLinkMobile"]) {
+    const btn = $(id);
+    if (!btn) continue;
+    const prev = btn.textContent;
+    btn.textContent = label;
+    btn.classList.add("share-copied");
+    setTimeout(() => {
+      btn.textContent = prev;
+      btn.classList.remove("share-copied");
+    }, 1800);
+  }
 }
 
 async function downloadPNG() {
