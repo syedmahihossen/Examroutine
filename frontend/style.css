@@ -1203,3 +1203,26 @@ html[data-theme="dark"] .room-chip { background: #1a2740; }
   .next-right { align-items: flex-start; text-align: left; }
   .next-sub { max-width: 100%; white-space: normal; }
 }
+
+.date-rel.is-ongoing {
+  background: #fff3d6;
+  color: #8a5a00;
+}
+html[data-theme="dark"] .date-rel.is-ongoing {
+  background: #3a3018;
+  color: #e6c56a;
+}
+.row-ongoing td {
+  box-shadow: inset 0 0 0 1px #e6c56a;
+}
+.row-ongoing td:first-child {
+  border-left-width: 4px !important;
+  border-left-color: #ee8b12 !important;
+}
+.mobile-exam.is-ongoing {
+  border-color: #e6c56a;
+  box-shadow: 0 0 0 1px #e6c56a40;
+}
+.next-tag.ongoing-tag {
+  background: #ee8b12;
+}
