@@ -35,9 +35,8 @@ FIREBASE_META_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/metad
 FIREBASE_SHALLOW_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines.json?shallow=true"
 # Global catalogue of every exam term ever synced (never overwritten as a whole).
 FIREBASE_TERMS_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/terms.json"
-FIREBASE_SECRET = os.environ.get(
-    "FIREBASE_SECRET", "TLC3hRT91gy6h78O2EwQ2NLxbNwRTTM4IWrlzd5C"
-).strip()
+# NEVER hardcode the secret. Set FIREBASE_SECRET in Render environment variables only.
+FIREBASE_SECRET = os.environ.get("FIREBASE_SECRET", "").strip()
 
 MAX_FILE_SIZE = 25 * 1024 * 1024
 REFRESH_SECRET = os.environ.get("REFRESH_SECRET", "").strip()
