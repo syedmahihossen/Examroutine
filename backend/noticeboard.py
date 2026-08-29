@@ -208,12 +208,22 @@ def _candidate_score(item: dict, exam_type: str, semester: str, year: Optional[i
         if "seat" in text and k != "seat":
             score -= 800
     elif kind == "seat":
+        # Hard-reject other departments' day-wise seat plans (CE, SWE, …).
+        if re.search(r"(civil engineering|ce|software engineering|swe|eee|mct|thm)", text) and not is_cse(text):
+            return -100000
+        if re.search(r"seat plan \d{1,2} (january|february|march|april|may|june|july|august|september|october|november|december)", text):
+            # Day-wise CE-style titles are almost never the CSE combined seat plan.
+            if not is_cse(text):
+                return -100000
+            score -= 400
         if k == "seat":
             score += 900
         if "seat plan" in text:
             score += 250
         if "seat details" in text:
             score += 150
+        if "final examination seat plan" in text or "midterm examination seat plan" in text:
+            score += 400
         if k == "routine":
             score -= 800
 
@@ -957,24 +967,52 @@ def _routine_notice_fallback_urls(exam_type: str, semester: str, year: Optional[
 
 
 def _seat_notice_fallback_urls(exam_type: str, semester: str, year: Optional[int]) -> list[str]:
-    """Known/current DIU slug patterns used when the card is not exposed to JS.
+    """Known DIU slug + noticeFile patterns for CSE seat plans.
 
-    This is intentionally a small fallback list, not a broad crawler. The
-    normal path is still the Notice Board DOM/API discovery.
+    The general notice board often ranks Civil Engineering day-wise seat plans
+    higher than the CSE combined seat-plan notice. These fallbacks keep CSE
+    discovery reliable when DOM ranking is noisy.
     """
     if not year:
         return []
     y = int(year)
     e = "mid" if exam_type == "mid" else "final"
-    patterns = [
+    noticeboard_slugs = [
         f"{e}-examination-seat-plan-{semester}-{y}-cse",
         f"{e}-exam-seat-plan-{semester}-{y}-cse",
         f"{e}-examination-seat-plan-{semester}-{y}",
         f"{e}-exam-seat-plan-{semester}-{y}",
         f"{e}-examination-seat-details-{semester}-{y}-cse",
         f"{e}-exam-seat-details-{semester}-{y}-cse",
+        f"final-examination-seat-plan-{semester}-{y}-cse" if e == "final" else f"midterm-examination-seat-plan-{semester}-{y}-cse",
+        f"final-examination-seat-plan-{semester}-{y}" if e == "final" else f"midterm-examination-seat-plan-{semester}-{y}",
     ]
-    return [absolute(f"/noticeboard/{x}") for x in patterns]
+    # Direct PDF patterns used by DIU webbackend (hash suffix varies; try common stems).
+    notice_files = [
+        f"final-exam-seat-details-{semester}-{y}",
+        f"final-examination-seat-plan-{semester}-{y}",
+        f"final-exam-seat-plan-{semester}-{y}",
+        f"mid-exam-seat-details-{semester}-{y}",
+        f"midterm-examination-seat-plan-{semester}-{y}",
+        f"cse-{e}-exam-seat-plan-{semester}-{y}",
+        f"cse-{e}-examination-seat-plan-{semester}-{y}",
+    ]
+    urls = [absolute(f"/noticeboard/{x}") for x in noticeboard_slugs]
+    # Also point discovery at the CSE department notice list.
+    urls.append("https://webbackend.daffodilvarsity.edu.bd/department-notice/cse")
+    urls.append(f"https://daffodilvarsity.edu.bd/noticeboard/{e}-examination-seat-plan-{semester}-{y}-cse")
+    for stem in notice_files:
+        # Full hashed filenames change; the notice detail pages remain the reliable entry.
+        urls.append(absolute(f"/noticeboard/{stem}-cse"))
+        urls.append(absolute(f"/noticeboard/{stem}"))
+    # Dedupe preserve order
+    seen = set()
+    out = []
+    for u in urls:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
 
 
 def _collect_explicit_seat_candidates(page, exam_type: str, semester: str, year: Optional[int]) -> list[dict]:
@@ -1301,12 +1339,24 @@ def discover_documents(section: str, exam_type: str, semester: str, year: Option
             if u not in seen:
                 candidates.append({
                     "url": u,
-                    "title": f"{exam_type.title()} Examination Seat Plan ({semester.title()}-{year_i})",
-                    "context": f"CSE {exam_type} examination seat plan {semester} {year_i}",
+                    "title": f"Final Examination Seat Plan ({semester.title()}-{year_i})" if exam_type == "final" else f"Midterm Examination Seat Plan ({semester.title()}-{year_i})",
+                    "context": f"Computer Science and Engineering CSE {exam_type} examination seat plan {semester} {year_i}",
                     "source": NOTICEBOARD_URL,
-                    "score_hint": 900,
+                    "score_hint": 2500,  # Prefer explicit CSE seat-plan fallbacks over CE day-slot noise
                 })
                 seen.add(u)
+        # Known live PDF used by DIU for Summer 2026 CSE final seat details (hash may change later).
+        if exam_type == "final" and year_i == 2026 and semester == "summer":
+            known_pdf = "https://webbackend.daffodilvarsity.edu.bd/noticeFile/final-exam-seat-details-summer-2026-2d4b722cea.pdf"
+            if known_pdf not in seen:
+                candidates.append({
+                    "url": known_pdf,
+                    "title": "Final Examination Seat Plan (Summer-2026)",
+                    "context": "Computer Science and Engineering CSE final examination seat plan summer 2026 seat details",
+                    "source": NOTICEBOARD_URL,
+                    "score_hint": 3000,
+                })
+                seen.add(known_pdf)
 
         if not candidates:
             raise RuntimeError("The DIU Notice Board could not be read. Please try again in a moment.")
