@@ -126,14 +126,40 @@ def session_matches(text: str, semester: str, year: Optional[int]) -> bool:
 
 
 def is_cse(text: str) -> bool:
+    """Strict CSE detector — rejects other FSIT departments unless CSE is clearly present."""
     s = norm(text).lower()
-    return (
+    has_cse = (
         "computer science and engineering" in s
         or "computer science & engineering" in s
         or "department of computer science" in s
         or bool(re.search(r"\bcse\b", s))
         or bool(re.search(r"\bcse\d{3,4}\b", s))
     )
+    if not has_cse:
+        return False
+    # Reject if another department is the primary subject and CSE is only incidental.
+    other_depts = (
+        r"\b(software engineering|swe|electrical and electronic|eee|"
+        r"civil engineering|\bce\b|multimedia|mct|architecture|"
+        r"tourism|thm|pharmacy|law|english|journalism)\b"
+    )
+    # Allow if title/context still clearly centres on CSE.
+    if re.search(other_depts, s) and not re.search(
+        r"\bcse\b|computer science and engineering", s
+    ):
+        return False
+    return True
+
+
+def is_strict_cse_notice(text: str) -> bool:
+    """Hard filter used after ranking — drop non-CSE notices entirely."""
+    s = norm(text).lower()
+    if not is_cse(s):
+        return False
+    # Must look like an exam-related notice (routine or seat plan).
+    if not re.search(r"\b(routine|schedule|seat\s*plan|seat\s*details|examination|exam)\b", s):
+        return False
+    return True
 
 
 def kind_of_notice(text: str) -> str:
@@ -150,6 +176,10 @@ def _candidate_score(item: dict, exam_type: str, semester: str, year: Optional[i
         "title", "context", "detail_title", "detail_text", "url"
     ))).lower()
     score = 0
+
+    # Hard reject non-CSE notices early (FSIT filter alone is not enough).
+    if not is_cse(text):
+        return -100000
 
     # Cheap metadata filter first. This is what makes the crawler fast.
     if normalize_exam_type(text) == exam_type:
@@ -170,26 +200,41 @@ def _candidate_score(item: dict, exam_type: str, semester: str, year: Optional[i
 
     k = kind_of_notice(text)
     if kind == "routine":
-        if k == "routine": score += 600
-        if "updated" in text: score += 400
-        if "seat" in text: score -= 800
+        if k == "routine":
+            score += 600
+        # Strong preference for "Updated" versions of the same routine.
+        if "updated" in text:
+            score += 700
+        if "seat" in text and k != "seat":
+            score -= 800
     elif kind == "seat":
-        if k == "seat": score += 900
-        if "seat plan" in text: score += 250
-        if "seat details" in text: score += 150
-        if k == "routine": score -= 800
+        if k == "seat":
+            score += 900
+        if "seat plan" in text:
+            score += 250
+        if "seat details" in text:
+            score += 150
+        if k == "routine":
+            score -= 800
 
-    if is_cse(text): score += 550
-    if section and normalize_section(section) in normalize_section(text): score += 250
-    if "examination" in text or "exam" in text: score += 100
+    if is_cse(text):
+        score += 550
+    if section and normalize_section(section) in normalize_section(text):
+        score += 250
+    if "examination" in text or "exam" in text:
+        score += 100
     # Prefer real notice / noticeFile URLs over API noise or broken escapes.
     u = norm(item.get("url", "")).lower()
     if "noticefile" in u or u.endswith((".pdf", ".xlsx")):
         score += 200
     if "\\/" in u or "api/v1/public" in u:
         score -= 1500
+    # Extra boost for clearly labelled Updated CSE routine.
     if kind == "routine" and "updated" in text and is_cse(text):
-        score += 350
+        score += 500
+    # Prefer department-notice CSE paths.
+    if "department-notice/cse" in u or "/cse/" in u:
+        score += 150
     return score
 
 
@@ -1277,13 +1322,25 @@ def discover_documents(section: str, exam_type: str, semester: str, year: Option
         batch = normalize_batch(section)
 
         def _routine_rank(x):
-            title = norm(f"{x.get('title','')} {x.get('detail_title','')} {x.get('final_url','')} {x.get('url','')}")
+            title = norm(
+                f"{x.get('title','')} {x.get('detail_title','')} "
+                f"{x.get('final_url','')} {x.get('url','')}"
+            )
+            # Drop any residual non-CSE documents that slipped through.
+            if not is_strict_cse_notice(title):
+                return (-1, 0, -1)
             exams = x.get("parsed_routine", {}).get("exams", [])
             batch_exams = sum(1 for e in exams if normalize_batch(e.get("batch")) == batch)
             updated = 1 if "updated" in title.lower() else 0
-            return (batch_exams, updated, x.get("score", 0))
+            # Prefer Updated versions, then most batch matches, then score.
+            return (updated, batch_exams, x.get("score", 0))
 
         routine = max(routines, key=_routine_rank)
+        if _routine_rank(routine)[0] < 0 and not is_strict_cse_notice(
+            norm(f"{routine.get('title','')} {routine.get('detail_title','')}")
+        ):
+            # Fallback: still accept best scored if strict filter was too aggressive.
+            pass
 
         seat = None
         if include_seat_plan:
