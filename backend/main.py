@@ -27,7 +27,7 @@ from parser import build_student_routine, parse_exam_routine, parse_seat_plan
 for _name in ("pdfminer", "pdfminer.pdfpage", "pdfplumber"):
     logging.getLogger(_name).setLevel(logging.ERROR)
 
-APP_VERSION = "8.4.0"
+APP_VERSION = "8.4.1"
 
 FIREBASE_BASE_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines"
 FIREBASE_V2_BASE = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines_v2"
@@ -71,8 +71,15 @@ def _auth_url(url: str) -> str:
 
 def firebase_get(url: str, timeout: int = 8):
     try:
-        r = requests.get(_auth_url(url) if "auth=" not in url else url, timeout=timeout)
+        # Prefer authenticated read when secret is set (works even if public read is off).
+        target = _auth_url(url) if "auth=" not in url else url
+        r = requests.get(target, timeout=timeout)
         if not r.ok:
+            # Fallback: public read (rules may allow unauthenticated GET on some paths)
+            if FIREBASE_SECRET and "auth=" in target:
+                r2 = requests.get(url, timeout=timeout)
+                if r2.ok:
+                    return r2.json()
             return None
         data = r.json()
         return data
@@ -81,8 +88,16 @@ def firebase_get(url: str, timeout: int = 8):
 
 
 def firebase_put(url: str, payload: dict, timeout: int = 10) -> bool:
+    if not FIREBASE_SECRET:
+        print(
+            "Firebase PUT skipped: FIREBASE_SECRET is empty. "
+            "Set it in Render Environment Variables (Realtime Database secret)."
+        )
+        return False
     try:
         r = requests.put(_auth_url(url), json=payload, timeout=timeout)
+        if not r.ok:
+            print(f"Firebase PUT failed {url}: HTTP {r.status_code} {r.text[:200]}")
         return r.ok
     except Exception as e:
         print(f"Firebase PUT failed {url}: {e}")
@@ -240,24 +255,83 @@ def _cache_put(key, value):
 
 
 def detect_term():
-    try:
-        resp = requests.get(NOTICEBOARD_URL, timeout=10)
-        match = re.search(r">([^<]*CSE[^<]*Routine[^<]*)<", resp.text, re.IGNORECASE)
-        if match:
-            title = match.group(1).lower()
-            exam_type = "mid" if "mid" in title else "final"
-            if "spring" in title:
-                semester = "spring"
-            elif "fall" in title:
-                semester = "fall"
-            else:
-                semester = "summer"
-            year_match = re.search(r"\b(20\d{2})\b", title)
-            year = int(year_match.group(1)) if year_match else 2026
-            return exam_type, semester, year
-    except Exception as e:
-        print(f"detect_term failed: {e}")
-    return "final", "summer", 2026
+    """Pick the newest CSE *exam* routine (mid/final), not class routine.
+
+    Scans main notice board + CSE department list. Prefers titles that
+    contain Mid/Final + Examination/Exam Routine over Class Routine.
+    """
+    urls = [
+        NOTICEBOARD_URL,
+        "https://webbackend.daffodilvarsity.edu.bd/noticeboard",
+        "https://webbackend.daffodilvarsity.edu.bd/department-notice/cse",
+    ]
+    candidates = []
+    title_re = re.compile(
+        r"(CSE[^<]{0,120}(?:Mid(?:term)?|Final)[^<]{0,80}(?:Examination\s*)?Routine[^<]{0,40})"
+        r"|(?:Mid(?:term)?|Final)\s*Examination\s*Routine[^<]{0,40}CSE[^<]{0,40}"
+        r"|(Updated\s+CSE[^<]{0,100}(?:Mid|Final)[^<]{0,60}Routine[^<]{0,40})",
+        re.I,
+    )
+    for url in urls:
+        try:
+            resp = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
+            if not resp.ok:
+                continue
+            text = resp.text
+            for m in title_re.finditer(text):
+                title = re.sub(r"\s+", " ", m.group(0)).strip().lower()
+                if "class routine" in title and "exam" not in title:
+                    continue
+                if "improvement" in title and "mid" not in title and "final" not in title:
+                    continue
+                exam_type = "mid" if re.search(r"\bmid(?:term)?\b", title) else "final"
+                if "spring" in title:
+                    semester = "spring"
+                elif "fall" in title or "autumn" in title:
+                    semester = "fall"
+                else:
+                    semester = "summer"
+                year_match = re.search(r"\b(20\d{2})\b", title)
+                year = int(year_match.group(1)) if year_match else 2026
+                # Score: prefer current academic cycle (Fall when published),
+                # exam routines over class routines, updated only within same term.
+                score = 0
+                score += year * 1000
+                # Fall is current in Oct–Dec cycle; strongly prefer newer semester
+                score += {"fall": 300, "summer": 200, "spring": 100}.get(semester, 0)
+                if "exam" in title or "examination" in title:
+                    score += 500
+                if "class routine" in title:
+                    score -= 2000
+                if "improvement" in title:
+                    score -= 400  # improvement is not the main mid/final routine
+                if "updated" in title:
+                    score += 50  # small boost within same term only
+                candidates.append((score, exam_type, semester, year, title[:120]))
+        except Exception as e:
+            print(f"detect_term fetch failed {url}: {e}")
+
+    if candidates:
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        best = candidates[0]
+        print(f"detect_term chose: {best[1]} {best[2]} {best[3]} score={best[0]} ({best[4]})")
+        return best[1], best[2], best[3]
+
+    print("detect_term: no CSE exam routine title found, defaulting fall mid 2026")
+    return "mid", "fall", 2026
+
+
+@app.get("/")
+def root():
+    """Render / uptime pings often hit /. Avoid noisy 404s."""
+    return {
+        "ok": True,
+        "service": "ExamRoutine API",
+        "version": APP_VERSION,
+        "docs": "/docs",
+        "health": "/api/health",
+        "cache_status": "/api/cache-status",
+    }
 
 
 @app.get("/api/health")
@@ -270,6 +344,7 @@ def health():
         "supported_semesters": ["spring", "summer", "fall"],
         "automatic_only": True,
         "strategy": "legacy-primary + optional-v2 + content-hash-skip + strict-cse",
+        "firebase_secret_configured": bool(FIREBASE_SECRET),
     }
 
 
@@ -465,12 +540,26 @@ def refresh_documents(
         False,
         description="Rebuild all sections even if routine content hash is unchanged.",
     ),
+    exam_type: Optional[str] = Query(
+        None, description="Optional override: mid or final (skips auto detect)."
+    ),
+    semester: Optional[str] = Query(
+        None, description="Optional override: spring, summer, or fall."
+    ),
+    year: Optional[int] = Query(None, description="Optional academic year override."),
 ):
     if REFRESH_SECRET and secret != REFRESH_SECRET:
         raise HTTPException(403, "Invalid or missing refresh secret.")
 
-    exam_type, semester, year = detect_term()
-    print(f"Refresh term: {semester} {year} {exam_type}")
+    if exam_type and semester and year:
+        exam_type = exam_type.lower().strip()
+        semester = semester.lower().strip()
+        if exam_type not in ("mid", "final") or semester not in ("spring", "summer", "fall"):
+            raise HTTPException(400, "Invalid exam_type or semester override.")
+        print(f"Refresh term (manual override): {semester} {year} {exam_type}")
+    else:
+        exam_type, semester, year = detect_term()
+        print(f"Refresh term (auto): {semester} {year} {exam_type}")
 
     existing_count = count_cached_sections()
     auto_force = existing_count < MIN_HEALTHY_SECTION_COUNT
