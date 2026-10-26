@@ -14,8 +14,6 @@ const API =
 const FIREBASE_BASE_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines";
 const FIREBASE_META_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/metadata.json";
 const FIREBASE_INDEX_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines.json?shallow=true";
-const FIREBASE_TERMS_URL = "https://examroutine-d5392-default-rtdb.firebaseio.com/terms.json";
-const FIREBASE_V2_BASE = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines_v2";
 const THEME_KEY = "examroutine-theme";
 
 const $ = (id) => document.getElementById(id);
@@ -26,6 +24,7 @@ let statusTimer = null;
 let sharedMeta = null; // { routine_url, seat_plan_url } from Firebase metadata
 let sectionIndex = null; // string[] of known section keys from Firebase
 let sectionIndexPromise = null;
+
 initTheme();
 bindEvents();
 applyUrlParams();
@@ -257,36 +256,25 @@ function toggleDetails() {
 
 function matchesFormFilters(payload, examType, semester, year) {
   if (!payload || !payload.exams || !payload.exams.length) return false;
-  const et = String(payload.exam_type || "").toLowerCase().trim();
-  const sem = String(payload.semester || "").toLowerCase().trim();
-  const yr = String(payload.year || "").trim();
-
-  // Strict when metadata is present; only accept legacy entries that lack metadata.
-  if (et) {
-    if (et !== examType) return false;
-  }
-  if (sem) {
-    // Allow "Summer" / "summer" / "Summer-2026" style values
-    if (sem !== semester && !sem.startsWith(semester) && !sem.includes(semester)) {
-      return false;
-    }
-  }
-  if (yr && year) {
-    if (yr !== String(year)) return false;
-  }
+  const et = String(payload.exam_type || "").toLowerCase();
+  const sem = String(payload.semester || "").toLowerCase();
+  const yr = String(payload.year || "");
+  // Soft match: if metadata missing, accept (legacy cache entries)
+  if (et && et !== examType) return false;
+  if (sem && sem !== semester && !sem.includes(semester)) return false;
+  if (yr && year && yr !== String(year)) return false;
   return true;
 }
 
 
 /** Priority B4: legacy flat key (production) + optional structured key under routines_v2
  *  NOTE: Never nest under /routines/{section}/... — that would wipe the legacy object in RTDB.
- *  FIREBASE_V2_BASE is declared at the top of this file.
  */
+const FIREBASE_V2_BASE = "https://examroutine-d5392-default-rtdb.firebaseio.com/routines_v2";
 
 function structuredRoutineUrl(section, examType, semester, year) {
   return `${FIREBASE_V2_BASE}/${encodeURIComponent(section)}/${encodeURIComponent(examType)}/${encodeURIComponent(semester)}/${encodeURIComponent(year)}.json`;
 }
-
 
 function legacyRoutineUrl(section) {
   return `${FIREBASE_BASE_URL}/${encodeURIComponent(section)}.json`;
@@ -297,7 +285,20 @@ function isUsableRoutine(json) {
 }
 
 async function fetchFirebaseRoutine(section, examType, semester, year) {
-  // 1) Structured key (routines_v2) — exact section/exam/semester/year
+  // 1) Legacy flat key first (what production actually has today)
+  try {
+    const r = await fetch(legacyRoutineUrl(section), { cache: "no-store" });
+    if (r.ok) {
+      const json = await r.json();
+      if (isUsableRoutine(json) && matchesFormFilters(json, examType, semester, year)) {
+        return { data: json, source: "legacy" };
+      }
+    }
+  } catch (e) {
+    console.warn("Legacy Firebase miss:", e.message);
+  }
+
+  // 2) Structured key (routines_v2) — populated only after backend redeploy
   try {
     const r = await fetch(structuredRoutineUrl(section, examType, semester, year), {
       cache: "no-store"
@@ -310,20 +311,6 @@ async function fetchFirebaseRoutine(section, examType, semester, year) {
     }
   } catch (e) {
     console.warn("Structured Firebase miss:", e.message);
-  }
-
-  // 2) Legacy flat key — only when it matches the selected semester/year/exam
-  try {
-    const r = await fetch(legacyRoutineUrl(section), { cache: "no-store" });
-    if (r.ok) {
-      const json = await r.json();
-      if (isUsableRoutine(json) && matchesFormFilters(json, examType, semester, year)) {
-        return { data: json, source: "legacy" };
-      }
-      // Mismatched term → fall through (do not force latest onto a past-term request)
-    }
-  } catch (e) {
-    console.warn("Legacy Firebase miss:", e.message);
   }
 
   return null;
@@ -475,10 +462,10 @@ async function autoAnalyze() {
   $("toggleDetails").setAttribute("aria-expanded", "false");
 
   const steps = [
-    "Checking cache for your section…",
-    "No matching cache — connecting to the DIU Notice Board…",
-    "Finding the official CSE (FSIT) routine…",
-    "New/updated routine detected — downloading and matching your section…",
+    "Checking cache…",
+    "Connecting to the DIU Notice Board…",
+    "Finding the official CSE routine…",
+    "Downloading and matching your section…",
     "Almost done — building your routine…"
   ];
   let step = 0;
@@ -518,14 +505,7 @@ async function autoAnalyze() {
           : "No matching seat plan was available, so the routine is shown without room/seat columns.";
         const scope = fbData.seat_plan_available ? fbData.section : `Batch ${fbData.batch}`;
         const via = fbHit.source === "structured" ? "structured cache" : "instant cache";
-        const termLabel = [fbData.semester, fbData.year, fbData.exam_type]
-          .filter(Boolean)
-          .join(" ")
-          .trim();
-        const termHint = termLabel ? ` · ${termLabel}` : "";
-        status(
-          `Done. Found ${fbData.exam_count} examination(s) for ${scope}. ${seatMessage} (from ${via}${termHint} — no new routine published)`
-        );
+        status(`Done. Found ${fbData.exam_count} examination(s) for ${scope}. ${seatMessage} (${via})`);
         setBusy(false);
         $("preview").scrollIntoView({ behavior: "smooth", block: "start" });
         return;

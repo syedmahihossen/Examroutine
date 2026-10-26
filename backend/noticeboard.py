@@ -36,14 +36,16 @@ except Exception:  # pragma: no cover
     sync_playwright = None
     PlaywrightTimeout = Exception
 
-from parser import (
-    build_student_routine,
-    clean_course_code,
-    normalize_batch,
-    normalize_section,
-    parse_exam_routine,
-    parse_seat_plan,
-)
+try:
+    from .parser import (
+        build_student_routine, clean_course_code, normalize_batch,
+        normalize_section, parse_exam_routine, parse_seat_plan,
+    )
+except ImportError:
+    from parser import (
+        build_student_routine, clean_course_code, normalize_batch,
+        normalize_section, parse_exam_routine, parse_seat_plan,
+    )
 
 NOTICEBOARD_URL = "https://daffodilvarsity.edu.bd/noticeboard"
 MAX_DOCUMENT_BYTES = 30 * 1024 * 1024
@@ -126,40 +128,14 @@ def session_matches(text: str, semester: str, year: Optional[int]) -> bool:
 
 
 def is_cse(text: str) -> bool:
-    """Strict CSE detector — rejects other FSIT departments unless CSE is clearly present."""
     s = norm(text).lower()
-    has_cse = (
+    return (
         "computer science and engineering" in s
         or "computer science & engineering" in s
         or "department of computer science" in s
         or bool(re.search(r"\bcse\b", s))
         or bool(re.search(r"\bcse\d{3,4}\b", s))
     )
-    if not has_cse:
-        return False
-    # Reject if another department is the primary subject and CSE is only incidental.
-    other_depts = (
-        r"\b(software engineering|swe|electrical and electronic|eee|"
-        r"civil engineering|\bce\b|multimedia|mct|architecture|"
-        r"tourism|thm|pharmacy|law|english|journalism)\b"
-    )
-    # Allow if title/context still clearly centres on CSE.
-    if re.search(other_depts, s) and not re.search(
-        r"\bcse\b|computer science and engineering", s
-    ):
-        return False
-    return True
-
-
-def is_strict_cse_notice(text: str) -> bool:
-    """Hard filter used after ranking — drop non-CSE notices entirely."""
-    s = norm(text).lower()
-    if not is_cse(s):
-        return False
-    # Must look like an exam-related notice (routine or seat plan).
-    if not re.search(r"\b(routine|schedule|seat\s*plan|seat\s*details|examination|exam)\b", s):
-        return False
-    return True
 
 
 def kind_of_notice(text: str) -> str:
@@ -176,10 +152,6 @@ def _candidate_score(item: dict, exam_type: str, semester: str, year: Optional[i
         "title", "context", "detail_title", "detail_text", "url"
     ))).lower()
     score = 0
-
-    # Hard reject non-CSE notices early (FSIT filter alone is not enough).
-    if not is_cse(text):
-        return -100000
 
     # Cheap metadata filter first. This is what makes the crawler fast.
     if normalize_exam_type(text) == exam_type:
@@ -200,51 +172,26 @@ def _candidate_score(item: dict, exam_type: str, semester: str, year: Optional[i
 
     k = kind_of_notice(text)
     if kind == "routine":
-        if k == "routine":
-            score += 600
-        # Strong preference for "Updated" versions of the same routine.
-        if "updated" in text:
-            score += 700
-        if "seat" in text and k != "seat":
-            score -= 800
+        if k == "routine": score += 600
+        if "updated" in text: score += 400
+        if "seat" in text: score -= 800
     elif kind == "seat":
-        # Hard-reject other departments' day-wise seat plans (CE, SWE, …).
-        if re.search(r"(civil engineering|ce|software engineering|swe|eee|mct|thm)", text) and not is_cse(text):
-            return -100000
-        if re.search(r"seat plan \d{1,2} (january|february|march|april|may|june|july|august|september|october|november|december)", text):
-            # Day-wise CE-style titles are almost never the CSE combined seat plan.
-            if not is_cse(text):
-                return -100000
-            score -= 400
-        if k == "seat":
-            score += 900
-        if "seat plan" in text:
-            score += 250
-        if "seat details" in text:
-            score += 150
-        if "final examination seat plan" in text or "midterm examination seat plan" in text:
-            score += 400
-        if k == "routine":
-            score -= 800
+        if k == "seat": score += 900
+        if "seat plan" in text: score += 250
+        if "seat details" in text: score += 150
+        if k == "routine": score -= 800
 
-    if is_cse(text):
-        score += 550
-    if section and normalize_section(section) in normalize_section(text):
-        score += 250
-    if "examination" in text or "exam" in text:
-        score += 100
+    if is_cse(text): score += 550
+    if section and normalize_section(section) in normalize_section(text): score += 250
+    if "examination" in text or "exam" in text: score += 100
     # Prefer real notice / noticeFile URLs over API noise or broken escapes.
     u = norm(item.get("url", "")).lower()
     if "noticefile" in u or u.endswith((".pdf", ".xlsx")):
         score += 200
     if "\\/" in u or "api/v1/public" in u:
         score -= 1500
-    # Extra boost for clearly labelled Updated CSE routine.
     if kind == "routine" and "updated" in text and is_cse(text):
-        score += 500
-    # Prefer department-notice CSE paths.
-    if "department-notice/cse" in u or "/cse/" in u:
-        score += 150
+        score += 350
     return score
 
 
@@ -362,13 +309,13 @@ def _collect_network_json(records: list[dict]) -> list[dict]:
     return _dedupe(out)
 
 
-def collect_notice_candidates(semester: str, year: Optional[int], exam_type: str) -> list[dict]:
+def collect_notice_candidates(semester: str, year: Optional[int], exam_type: str, force_refresh: bool = False) -> list[dict]:
     """One browser pass. Returns cheap notice metadata, not documents.
 
     Results are cached briefly so concurrent students share one crawl.
     """
     cache_key = (semester, year, exam_type)
-    cached = _CANDIDATE_CACHE.get(cache_key)
+    cached = None if force_refresh else _CANDIDATE_CACHE.get(cache_key)
     if cached:
         created, items = cached
         if time.monotonic() - created < CANDIDATE_CACHE_SECONDS and items:
@@ -754,7 +701,8 @@ def _routine_is_match(path: str, section: str, semester: str, year: Optional[int
     except Exception:
         return None
     batch=normalize_batch(section)
-    exams=[e for e in parsed.get("exams",[]) if normalize_batch(e.get("batch"))==batch]
+    all_exams = parsed.get("exams", [])
+    exams = [e for e in all_exams if normalize_batch(e.get("batch")) == batch] if batch else all_exams
     if not exams: return None
     if parsed.get("semester") and normalize_semester(parsed["semester"]) != semester: return None
     if year and parsed.get("year") and int(parsed["year"]) != int(year): return None
@@ -967,52 +915,24 @@ def _routine_notice_fallback_urls(exam_type: str, semester: str, year: Optional[
 
 
 def _seat_notice_fallback_urls(exam_type: str, semester: str, year: Optional[int]) -> list[str]:
-    """Known DIU slug + noticeFile patterns for CSE seat plans.
+    """Known/current DIU slug patterns used when the card is not exposed to JS.
 
-    The general notice board often ranks Civil Engineering day-wise seat plans
-    higher than the CSE combined seat-plan notice. These fallbacks keep CSE
-    discovery reliable when DOM ranking is noisy.
+    This is intentionally a small fallback list, not a broad crawler. The
+    normal path is still the Notice Board DOM/API discovery.
     """
     if not year:
         return []
     y = int(year)
     e = "mid" if exam_type == "mid" else "final"
-    noticeboard_slugs = [
+    patterns = [
         f"{e}-examination-seat-plan-{semester}-{y}-cse",
         f"{e}-exam-seat-plan-{semester}-{y}-cse",
         f"{e}-examination-seat-plan-{semester}-{y}",
         f"{e}-exam-seat-plan-{semester}-{y}",
         f"{e}-examination-seat-details-{semester}-{y}-cse",
         f"{e}-exam-seat-details-{semester}-{y}-cse",
-        f"final-examination-seat-plan-{semester}-{y}-cse" if e == "final" else f"midterm-examination-seat-plan-{semester}-{y}-cse",
-        f"final-examination-seat-plan-{semester}-{y}" if e == "final" else f"midterm-examination-seat-plan-{semester}-{y}",
     ]
-    # Direct PDF patterns used by DIU webbackend (hash suffix varies; try common stems).
-    notice_files = [
-        f"final-exam-seat-details-{semester}-{y}",
-        f"final-examination-seat-plan-{semester}-{y}",
-        f"final-exam-seat-plan-{semester}-{y}",
-        f"mid-exam-seat-details-{semester}-{y}",
-        f"midterm-examination-seat-plan-{semester}-{y}",
-        f"cse-{e}-exam-seat-plan-{semester}-{y}",
-        f"cse-{e}-examination-seat-plan-{semester}-{y}",
-    ]
-    urls = [absolute(f"/noticeboard/{x}") for x in noticeboard_slugs]
-    # Also point discovery at the CSE department notice list.
-    urls.append("https://webbackend.daffodilvarsity.edu.bd/department-notice/cse")
-    urls.append(f"https://daffodilvarsity.edu.bd/noticeboard/{e}-examination-seat-plan-{semester}-{y}-cse")
-    for stem in notice_files:
-        # Full hashed filenames change; the notice detail pages remain the reliable entry.
-        urls.append(absolute(f"/noticeboard/{stem}-cse"))
-        urls.append(absolute(f"/noticeboard/{stem}"))
-    # Dedupe preserve order
-    seen = set()
-    out = []
-    for u in urls:
-        if u not in seen:
-            seen.add(u)
-            out.append(u)
-    return out
+    return [absolute(f"/noticeboard/{x}") for x in patterns]
 
 
 def _collect_explicit_seat_candidates(page, exam_type: str, semester: str, year: Optional[int]) -> list[dict]:
@@ -1120,7 +1040,7 @@ def _try_seat_doc(d, notice, section, exam_type, semester, year, batch, routine_
             pass
 
     wanted = normalize_section(section)
-    matches = [x for x in alloc if normalize_section(x.get("section")) == wanted and x.get("rooms")]
+    matches = [x for x in alloc if (not wanted or normalize_section(x.get("section")) == wanted) and x.get("rooms")]
     if not matches:
         return None
     overlap = sum(
@@ -1147,7 +1067,7 @@ def _inspect_seat_plan(session, candidates, routine, section, exam_type, semeste
     routine_keys = {
         (e.get("date"), e.get("slot"), clean_course_code(e.get("course_code", "")))
         for e in routine_exams
-        if normalize_batch(e.get("batch")) == batch
+        if (not batch or normalize_batch(e.get("batch")) == batch)
     }
 
     candidate_pool = []
@@ -1269,7 +1189,13 @@ def _inspect_seat_plan(session, candidates, routine, section, exam_type, semeste
 
 
 
-def discover_documents(section: str, exam_type: str, semester: str, year: Optional[int]=None, include_seat_plan: bool=True) -> dict:
+def clear_notice_caches() -> None:
+    """Clear in-memory discovery/document caches before a scheduled live refresh."""
+    _CANDIDATE_CACHE.clear()
+    _DOC_CACHE.clear()
+
+
+def discover_documents(section: str, exam_type: str, semester: str, year: Optional[int]=None, include_seat_plan: bool=True, force_refresh: bool=False) -> dict:
     section = normalize_section(section)
     exam_type = normalize_exam_type(exam_type) or (exam_type or "").lower().strip()
     semester = normalize_semester(semester) or (semester or "").lower().strip()
@@ -1284,7 +1210,10 @@ def discover_documents(section: str, exam_type: str, semester: str, year: Option
     doc_key = (exam_type, semester, year_i)
 
     # --- Fast path: reuse previously downloaded routine/seat for this session ---
-    cached = _DOC_CACHE.get(doc_key)
+    if force_refresh:
+        _DOC_CACHE.pop(doc_key, None)
+        _CANDIDATE_CACHE.pop((semester, year_i, exam_type), None)
+    cached = None if force_refresh else _DOC_CACHE.get(doc_key)
     if cached:
         created, payload = cached
         if time.monotonic() - created < DOC_CACHE_SECONDS and payload.get("routine"):
@@ -1318,7 +1247,7 @@ def discover_documents(section: str, exam_type: str, semester: str, year: Option
         session = requests.Session()
         session.headers.update(HEADERS)
 
-        candidates = collect_notice_candidates(semester, year_i, exam_type)
+        candidates = collect_notice_candidates(semester, year_i, exam_type, force_refresh=force_refresh)
         if not candidates:
             candidates = static_collect_notices(session, semester, year_i, exam_type)
 
@@ -1339,24 +1268,12 @@ def discover_documents(section: str, exam_type: str, semester: str, year: Option
             if u not in seen:
                 candidates.append({
                     "url": u,
-                    "title": f"Final Examination Seat Plan ({semester.title()}-{year_i})" if exam_type == "final" else f"Midterm Examination Seat Plan ({semester.title()}-{year_i})",
-                    "context": f"Computer Science and Engineering CSE {exam_type} examination seat plan {semester} {year_i}",
+                    "title": f"{exam_type.title()} Examination Seat Plan ({semester.title()}-{year_i})",
+                    "context": f"CSE {exam_type} examination seat plan {semester} {year_i}",
                     "source": NOTICEBOARD_URL,
-                    "score_hint": 2500,  # Prefer explicit CSE seat-plan fallbacks over CE day-slot noise
+                    "score_hint": 900,
                 })
                 seen.add(u)
-        # Known live PDF used by DIU for Summer 2026 CSE final seat details (hash may change later).
-        if exam_type == "final" and year_i == 2026 and semester == "summer":
-            known_pdf = "https://webbackend.daffodilvarsity.edu.bd/noticeFile/final-exam-seat-details-summer-2026-2d4b722cea.pdf"
-            if known_pdf not in seen:
-                candidates.append({
-                    "url": known_pdf,
-                    "title": "Final Examination Seat Plan (Summer-2026)",
-                    "context": "Computer Science and Engineering CSE final examination seat plan summer 2026 seat details",
-                    "source": NOTICEBOARD_URL,
-                    "score_hint": 3000,
-                })
-                seen.add(known_pdf)
 
         if not candidates:
             raise RuntimeError("The DIU Notice Board could not be read. Please try again in a moment.")
@@ -1372,25 +1289,13 @@ def discover_documents(section: str, exam_type: str, semester: str, year: Option
         batch = normalize_batch(section)
 
         def _routine_rank(x):
-            title = norm(
-                f"{x.get('title','')} {x.get('detail_title','')} "
-                f"{x.get('final_url','')} {x.get('url','')}"
-            )
-            # Drop any residual non-CSE documents that slipped through.
-            if not is_strict_cse_notice(title):
-                return (-1, 0, -1)
+            title = norm(f"{x.get('title','')} {x.get('detail_title','')} {x.get('final_url','')} {x.get('url','')}")
             exams = x.get("parsed_routine", {}).get("exams", [])
             batch_exams = sum(1 for e in exams if normalize_batch(e.get("batch")) == batch)
             updated = 1 if "updated" in title.lower() else 0
-            # Prefer Updated versions, then most batch matches, then score.
-            return (updated, batch_exams, x.get("score", 0))
+            return (batch_exams, updated, x.get("score", 0))
 
         routine = max(routines, key=_routine_rank)
-        if _routine_rank(routine)[0] < 0 and not is_strict_cse_notice(
-            norm(f"{routine.get('title','')} {routine.get('detail_title','')}")
-        ):
-            # Fallback: still accept best scored if strict filter was too aggressive.
-            pass
 
         seat = None
         if include_seat_plan:

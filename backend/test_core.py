@@ -1,8 +1,9 @@
 import os
+from pathlib import Path
 from parser import parse_exam_routine, parse_seat_plan, build_student_routine
 
-ROUTINE = os.environ.get("EXAM_ROUTINE_PDF", "/mnt/data/examroutine_test/updated-cse-exam-routine-final-semester-summer-2026-9f64c0100d.pdf")
-SEAT = os.environ.get("SEAT_PLAN_PDF", "/mnt/data/examroutine_test/final-exam-seat-details-summer-2026-2d4b722cea.pdf")
+ROUTINE = os.environ.get("EXAM_ROUTINE_PDF", str(Path(__file__).resolve().parent / "testdata" / "updated-cse-exam-routine-final-semester-summer-2026-9f64c0100d.pdf"))
+SEAT = os.environ.get("SEAT_PLAN_PDF", str(Path(__file__).resolve().parent / "testdata" / "final-exam-seat-details-summer-2026-2d4b722cea.pdf"))
 
 
 def main():

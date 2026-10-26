@@ -1,47 +1,46 @@
-# 🎓 DIU ExamRoutine
+# DIU ExamRoutine — corrected deployment package
 
-An automated, zero-latency exam routine and seat plan finder designed specifically for Daffodil International University (DIU) CSE students. 
+This project finds DIU CSE Mid/Final routines, parses the official routine and optional seat plan, and publishes per-section data to Firebase Realtime Database.
 
-Instead of manually scrolling through massive, unformatted PDF documents, students can simply enter their section (e.g., `65_L`) and instantly receive a personalized, clearly formatted schedule complete with room numbers and seat allocations.
+## Important security setup
 
-## ✨ Features
+A Firebase credential was hard-coded in the source file you uploaded. Treat it as exposed and rotate/revoke it. The corrected code does not contain that credential.
 
-* **⚡ Zero-Latency Search:** Routine data is pre-processed and cached, delivering personalized schedules to students in milliseconds.
-* **🪑 Automated Seat Plan Mapping:** Cross-references the official routine with seat plan documents to automatically assign rooms and seat ranges to specific sections.
-* **🌙 Premium Dark UI:** A polished, modern, and professional dark-themed user interface optimized for readability.
-* **📥 Export Options:** Students can easily download their personalized routines as PNG or PDF files for offline viewing.
+In Render, set:
 
----
+- `REFRESH_SECRET`: a long random secret (protects `/api/refresh`).
+- `FIREBASE_DB_URL`: `https://examroutine-d5392-default-rtdb.firebaseio.com`.
+- `FIREBASE_SERVICE_ACCOUNT_JSON`: the full Firebase service-account JSON as a single-line JSON environment variable. Use a service account with database write permissions. Do not commit this value to GitHub or share it in chat.
 
-## 🏗️ System Architecture & Data Flow
+The frontend only needs public read access to the Firebase paths it displays. Keep writes restricted; the backend Admin SDK uses the service account and bypasses client database rules.
 
-ExamRoutine utilizes a hybrid, event-driven architecture designed for instant user experiences and minimal server cost. By decoupling the scraping engine from the frontend, the application ensures that users never have to wait for a backend server to wake up or parse PDFs in real-time.
+## Deploy
 
-1. **Automated Trigger (GitHub Actions):** A cron job runs a workflow every 30 minutes, acting as a background alarm clock.
-2. **Smart Scraper (Render - Python/FastAPI):** 
-   * Wakes up and checks the official DIU Notice Board.
-   * Compares the latest PDF URL against a saved Firebase bookmark. If the URL hasn't changed, the server immediately stops to conserve resources.
-   * If a new PDF is detected, it downloads the documents.
-3. **Data Extraction (Regex):** The backend parses the PDF, dynamically utilizes Regular Expressions (Regex) to identify every single active section (e.g., `65_L`, `64_M`), and maps their individual exam schedules and seat plans.
-4. **Real-time Cache (Firebase RTDB):** The parsed, structured JSON for every discovered section is pushed to Firebase in a massive batch, acting as a high-speed database cache.
-5. **Instant Frontend (Cloudflare Pages):** When a student searches for their section, the static frontend queries Firebase directly. The data loads in milliseconds without ever touching the Python backend. If a typo occurs, the UI gracefully handles the error.
+1. Put this folder's contents at the root of the GitHub repository.
+2. Deploy `render.yaml` to Render. Confirm the service root is the repository root.
+3. Add `FIREBASE_SERVICE_ACCOUNT_JSON` in Render Environment settings.
+4. Set `REFRESH_SECRET` in Render. If Render generated it automatically, copy its current value into the GitHub Actions repository secret named `REFRESH_SECRET`.
+5. Enable the GitHub Actions workflow in `.github/workflows/refresh-routines.yml`.
+6. Host `frontend/` on Cloudflare Pages, setting the build output directory to `frontend` and no build command.
 
----
+## Refresh behavior
 
-## 🛠️ Tech Stack
+`POST /api/refresh` checks the current academic year for Spring/Summer/Fall Mid and Final sessions, refreshes discovery caches, parses verified routines, and writes session-specific records to `routines_v2/{section}/{exam_type}/{semester}/{year}`. It also updates the legacy `routines/{section}` path for older clients. A failure in one session is reported separately rather than silently treated as success.
 
-* **Frontend:** Vanilla JavaScript, HTML5, CSS3 (Hosted on Cloudflare Pages)
-* **Backend Engine:** Python, FastAPI, Requests, Regex (Hosted on Render)
-* **Database/Cache:** Firebase Realtime Database (Secured via REST Auth)
-* **Automation:** GitHub Actions (Cron scheduling)
+Optional manual refresh for a single session:
 
----
+`POST /api/refresh?semester=fall&year=2026&exam_type=mid`
 
+Send `Authorization: Bearer <REFRESH_SECRET>`.
 
+## Local checks
 
-👨‍💻 Author
-Syed Mahi Hosen
+```bash
+cd backend
+pip install -r requirements.txt
+python -m playwright install chromium
+python -m pytest -q test_core.py
+uvicorn main:app --reload
+```
 
-Computer Science and Engineering (CSE)
-
-Daffodil International University (DIU)
+If a routine is published but not discovered, open `/api/discovery-debug?semester=fall&year=2026&exam_type=mid` and inspect candidate titles/URLs. Do not treat a 200 response from the refresh endpoint as proof of a section update unless its `processed` list contains the session.

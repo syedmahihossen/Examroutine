@@ -8,5 +8,7 @@ services:
     envVars:
       - key: REFRESH_SECRET
         generateValue: true
+      - key: FIREBASE_DB_URL
+        value: https://examroutine-d5392-default-rtdb.firebaseio.com
       - key: PYTHON_VERSION
         value: "3.12"
