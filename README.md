@@ -20,8 +20,9 @@ The frontend only needs public read access to the Firebase paths it displays. Ke
 2. Deploy `render.yaml` to Render. Confirm the service root is the repository root.
 3. Add `FIREBASE_SERVICE_ACCOUNT_JSON` in Render Environment settings.
 4. Set `REFRESH_SECRET` in Render. If Render generated it automatically, copy its current value into the GitHub Actions repository secret named `REFRESH_SECRET`.
-5. Enable the GitHub Actions workflow in `.github/workflows/refresh-routines.yml`.
-6. Host `frontend/` on Cloudflare Pages, setting the build output directory to `frontend` and no build command.
+5. In GitHub repository **Settings → Secrets and variables → Actions → Variables**, add repository variable `RENDER_API_URL` with the exact public Render URL, for example `https://examroutine-api.onrender.com` (use the URL actually shown in your Render dashboard).
+6. Enable the GitHub Actions workflow in `.github/workflows/refresh-routines.yml`, then use **Actions → Refresh DIU Exam Routines → Run workflow**.
+7. Host `frontend/` on Cloudflare Pages, setting the build output directory to `frontend` and no build command.
 
 ## Refresh behavior
 
@@ -32,6 +33,10 @@ Optional manual refresh for a single session:
 `POST /api/refresh?semester=fall&year=2026&exam_type=mid`
 
 Send `Authorization: Bearer <REFRESH_SECRET>`.
+
+## CSE-only behavior
+
+Discovery ranks CSE routine notices and verifies downloaded routine documents against the selected session and section/batch. Seat plans are optional. If a newly published CSE notice does not appear in `/api/discovery-debug`, the notice collector needs to be adjusted to the current DIU notice title/detail/attachment structure; do not broaden the filter to other departments.
 
 ## Local checks
 
