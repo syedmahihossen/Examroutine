@@ -2,7 +2,7 @@ services:
   - type: web
     name: examroutine-api
     runtime: python
-    buildCommand: pip install -r backend/requirements.txt && python -m playwright install chromium
+    buildCommand: pip install -r backend/requirements.txt
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
     envVars:

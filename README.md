@@ -34,17 +34,22 @@ Optional manual refresh for a single session:
 
 Send `Authorization: Bearer <REFRESH_SECRET>`.
 
-## CSE-only behavior
+## How discovery works (v10)
 
-Discovery ranks CSE routine notices and verifies downloaded routine documents against the selected session and section/batch. Seat plans are optional. If a newly published CSE notice does not appear in `/api/discovery-debug`, the notice collector needs to be adjusted to the current DIU notice title/detail/attachment structure; do not broaden the filter to other departments.
+DIU's main notice board is now a JavaScript app, so the old browser crawl saw no notices. Discovery now reads the server-rendered CSE department list (`/department-notice/cse`, falling back to the mirror hosts), so it is CSE-only by construction and needs no browser (Playwright was removed).
+
+- Titles are classified by semester, year, Mid/Final and routine/seat plan. Improvement exams, class routines and registration notices are ignored. "CSE" is not required in the title.
+- The newest matching notice wins, so "Updated ..." notices replace older ones. A routine is accepted only if its PDF verifies (right semester/year, contains the batch).
+- The seat plan is taken from the same notice when bundled ("Routine and Seat Plan"), otherwise from the newest separate seat-plan notice, and must overlap the routine.
+
+If a routine is published but not found, open `/api/discovery-debug?semester=fall&year=2026&exam_type=mid` and check which notices are listed and how they were classified.
 
 ## Local checks
 
 ```bash
 cd backend
 pip install -r requirements.txt
-python -m playwright install chromium
-python -m pytest -q test_core.py
+python -m pytest -q test_core.py test_noticeboard.py
 uvicorn main:app --reload
 ```
 

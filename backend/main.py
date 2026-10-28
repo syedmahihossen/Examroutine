@@ -27,7 +27,7 @@ FIREBASE_DB_URL = os.getenv(
 ).rstrip("/")
 FIREBASE_SERVICE_ACCOUNT_JSON = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
 REFRESH_SECRET = os.getenv("REFRESH_SECRET", "").strip()
-APP_VERSION = "9.0.0"
+APP_VERSION = "10.0.0"
 MAX_FILE_SIZE = 25 * 1024 * 1024
 
 # Keep third-party PDF warnings out of production logs.
@@ -43,8 +43,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory result cache. Prevents students from launching expensive
-# Playwright crawls. Render free tier clears it on sleep/restart — that is OK
+# In-memory result cache. Prevents students from launching repeated
+# notice-board crawls. Render free tier clears it on sleep/restart — that is OK
 # because the GitHub Actions refresh job will warm it again.
 _CACHE: dict[tuple, tuple[float, dict]] = {}
 _CACHE_LOCK = Lock()
@@ -208,7 +208,7 @@ def auto_analyze(
     if cached is not None:
         return {**cached, "cached": True}
 
-    # Prevent two students from launching identical Playwright crawls at once.
+    # Prevent two students from launching identical crawls at once.
     # The second request waits briefly for the first request to populate cache.
     with _INFLIGHT_LOCK:
         if key in _INFLIGHT:
@@ -338,7 +338,7 @@ def refresh_documents(
         raise HTTPException(503, "Firebase writes are not configured. Set FIREBASE_SERVICE_ACCOUNT_JSON in Render.")
 
     current_year = year or datetime.now().year
-    semesters = [semester.lower().strip()] if semester else ["fall", "summer", "spring"]
+    semesters = [semester.lower().strip()] if semester else ["spring", "summer", "fall"]
     exam_types = [exam_type.lower().strip()] if exam_type else ["mid", "final"]
     processed = []
     failures = []
